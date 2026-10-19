@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Run a lecture job with the fans kept down. AMD APUs only (amdgpu sysfs).
+#
+# Fan speed tracks sustained package power, so this caps the APU instead of
+# letting the job pull full boost: GPU clocks pinned to the low DPM states,
+# CPU energy policy set to power-saving, and the job niced. Everything is
+# restored on exit, including on Ctrl-C. Needs pkexec (polkit) for the writes.
+#
+#   lecture-quiet lecture-notes ~/lectures/transcripts/NET301/2026-09-24_x.md
+# Set LECTURE_GPU_CARD=/sys/class/drm/cardN/device if autodetection picks wrong.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+[[ $# -ge 1 ]] || { sed -n '2,10p' "$0"; exit 2; }
+
+CARD="$LECTURE_GPU_CARD"
+if [[ -z "$CARD" ]]; then
+  for d in /sys/class/drm/card*/device; do
+    [[ -f "$d/pp_dpm_sclk" ]] && { CARD="$d"; break; }
+  done
+fi
+[[ -n "$CARD" && -f "$CARD/pp_dpm_sclk" ]] || { echo "no amdgpu card with pp_dpm_sclk found; running un-capped" >&2; exec nice -n 19 ionice -c 3 "$@"; }
+command -v pkexec >/dev/null 2>&1 || { echo "pkexec missing; running un-capped" >&2; exec nice -n 19 ionice -c 3 "$@"; }
+
+EPP_PATH='/sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference'   # glob expands inside sh -c
+LEVEL="${QUIET_SCLK_MASK:-0 1}"   # allowed GPU clock states
+
+prev_dpm="$(cat "$CARD/power_dpm_force_performance_level" 2>/dev/null || echo auto)"
+prev_epp="$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo balance_performance)"
+
+apply() {
+  pkexec sh -c "
+    echo manual > $CARD/power_dpm_force_performance_level 2>/dev/null
+    echo '$LEVEL' > $CARD/pp_dpm_sclk 2>/dev/null
+    for f in $EPP_PATH; do echo power > \$f 2>/dev/null; done
+  " 2>/dev/null
+}
+# shellcheck disable=SC2329  # invoked by the trap
+restore() {
+  pkexec sh -c "
+    echo '$prev_dpm' > $CARD/power_dpm_force_performance_level 2>/dev/null
+    for f in $EPP_PATH; do echo '$prev_epp' > \$f 2>/dev/null; done
+  " 2>/dev/null
+  echo "  power settings restored (dpm=$prev_dpm epp=$prev_epp)"
+}
+trap restore EXIT INT TERM
+
+echo "▼ quiet mode: GPU clocks capped, CPU set to power-saving"
+apply
+echo "  GPU now: $(tr '\n' ' ' < "$CARD/pp_dpm_sclk" 2>/dev/null | sed 's/  */ /g')"
+echo "  EPP now: $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)"
+echo
+
+nice -n 19 ionice -c 3 "$@"
+rc=$?
+echo
+echo "  job exited ($rc)"
+exit $rc

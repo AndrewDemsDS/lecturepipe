@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the lecture inbox for new recordings
+
+[Path]
+PathExistsGlob=%h/lectures/inbox/*
+Unit=lecture-watch.service
+
+[Install]
+WantedBy=default.target

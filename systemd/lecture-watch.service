@@ -1,0 +1,12 @@
+[Unit]
+Description=Transcribe queued lecture recordings locally
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lecture-watch
+# Stay out of the way while the laptop is in use.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

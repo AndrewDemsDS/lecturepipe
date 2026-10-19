@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# Interactive setup for lecturepipe. Writes ~/.config/lecturepipe/config and
+# $LECTURE_ROOT/courses.conf, downloads Whisper models, picks a microphone and a
+# notes engine, and arms the systemd watcher. Safe to re-run: current values
+# are the defaults.
+#
+#   lecture-setup              interactive
+#   lecture-setup --defaults   take every default, ask nothing (CI, scripts)
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+ASSUME=0
+case "${1:-}" in
+  --defaults|-y) ASSUME=1 ;;
+  -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+esac
+
+bold=$'\e[1m'; dim=$'\e[2m'; grn=$'\e[32m'; ylw=$'\e[33m'; red=$'\e[31m'; off=$'\e[0m'
+[[ -t 1 ]] || { bold=""; dim=""; grn=""; ylw=""; red=""; off=""; }
+step() { printf '\n%s%s%s\n' "$bold" "$*" "$off"; }
+ok()   { printf '  %s✔%s %s\n' "$grn" "$off" "$*"; }
+warn() { printf '  %s!%s %s\n' "$ylw" "$off" "$*"; }
+bad()  { printf '  %s✖%s %s\n' "$red" "$off" "$*"; }
+
+# ask VAR "question" "default"
+ask() {
+  local -n _v="$1"; local q="$2" d="${3:-}" a
+  if [[ "$ASSUME" == 1 ]]; then _v="$d"; printf '  %s %s[%s]%s\n' "$q" "$dim" "$d" "$off"; return; fi
+  read -r -e -p "  $q [${d}] " a </dev/tty || a=""
+  _v="${a:-$d}"
+}
+# yesno "question" default(y|n)
+yesno() {
+  local q="$1" d="${2:-y}" a
+  if [[ "$ASSUME" == 1 ]]; then printf '  %s %s[%s]%s\n' "$q" "$dim" "$d" "$off"; [[ "$d" == y ]]; return; fi
+  read -r -p "  $q [$d] " a </dev/tty || a=""
+  a="${a:-$d}"; [[ "${a,,}" == y* ]]
+}
+# choose VAR "question" default_index "label1" "label2" ...  (1-based)
+choose() {
+  local -n _c="$1"; local q="$2" d="$3"; shift 3
+  local i=1 a
+  echo "  $q"
+  for o in "$@"; do printf '    %s%d)%s %s\n' "$bold" "$i" "$off" "$o"; i=$((i+1)); done
+  if [[ "$ASSUME" == 1 ]]; then _c="$d"; printf '  %s[%s]%s\n' "$dim" "$d" "$off"; return; fi
+  while :; do
+    read -r -p "  choice [$d]: " a </dev/tty || a=""
+    a="${a:-$d}"
+    [[ "$a" =~ ^[0-9]+$ && "$a" -ge 1 && "$a" -le $# ]] && { _c="$a"; return; }
+  done
+}
+
+echo "${bold}lecturepipe setup${off}"
+echo "${dim}Config: $LECTUREPIPE_CONFIG${off}"
+
+# ---------------------------------------------------------------- 1. dependencies
+step "1/7  Dependencies"
+MISSING=()
+for c in ffmpeg ffprobe whisper-cli python3 flock; do
+  if command -v "$c" >/dev/null 2>&1; then ok "$c"; else bad "$c missing"; MISSING+=("$c"); fi
+done
+for c in pactl pdftotext pdfinfo systemctl; do
+  if command -v "$c" >/dev/null 2>&1; then ok "$c"; else warn "$c missing (optional: $(case $c in pactl) echo "mic listing";; pdf*) echo "slides in notes";; systemctl) echo "automatic watcher";; esac))"; fi
+done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo
+  echo "  Install the missing tools and re-run. On Arch: pacman -S whisper-cpp ffmpeg python util-linux"
+  echo "  (whisper-cli ships with whisper.cpp; for GPU add ggml-vulkan or build with -DGGML_VULKAN=1)."
+  [[ "$ASSUME" == 1 ]] || yesno "Continue anyway?" n || exit 1
+fi
+
+# ---------------------------------------------------------------- 2. directories
+step "2/7  Directories"
+ask NEW_ROOT "Where should recordings and transcripts live?" "$LECTURE_ROOT"
+NEW_ROOT="${NEW_ROOT/#\~/$HOME}"
+mkdir -p "$NEW_ROOT"/{inbox,audio,transcripts,.state} && ok "$NEW_ROOT"
+echo "  ${dim}A notes vault (Obsidian, Nextcloud folder, plain directory) gets finished lectures filed"
+echo "  into <vault>/<anything>_<course>/lectures/NN/ next to the slides. Leave empty to skip.${off}"
+ask NEW_VAULT "Notes vault directory (empty = none)" "$LECTURE_NOTES_ROOT"
+NEW_VAULT="${NEW_VAULT/#\~/$HOME}"
+if [[ -n "$NEW_VAULT" ]]; then
+  if [[ -d "$NEW_VAULT" ]]; then ok "$NEW_VAULT"; else warn "$NEW_VAULT does not exist yet; filing is skipped until it does"; fi
+fi
+
+# ---------------------------------------------------------------- 3. models
+step "3/7  Whisper models"
+ask NEW_MODELS "Model directory" "$WHISPER_MODELS"
+NEW_MODELS="${NEW_MODELS/#\~/$HOME}"
+mkdir -p "$NEW_MODELS"
+HF=https://huggingface.co
+declare -A URL=(
+  [ggml-large-v3.bin]="$HF/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+  [ggml-large-v3-turbo.bin]="$HF/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
+  [ggml-silero-v6.2.0.bin]="$HF/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin"
+)
+declare -A SIZE=([ggml-large-v3.bin]="3.1 GB" [ggml-large-v3-turbo.bin]="1.6 GB" [ggml-silero-v6.2.0.bin]="0.9 MB")
+declare -A WHY=([ggml-large-v3.bin]="most accurate, about 2.5x realtime on a laptop iGPU"
+                [ggml-large-v3-turbo.bin]="about 3x faster, slightly less accurate"
+                [ggml-silero-v6.2.0.bin]="voice activity detection, skips silence")
+for m in ggml-large-v3.bin ggml-large-v3-turbo.bin ggml-silero-v6.2.0.bin; do
+  if [[ -s "$NEW_MODELS/$m" ]]; then ok "$m present"; continue; fi
+  dl_default=y
+  [[ "$m" == ggml-large-v3.bin || "$ASSUME" == 1 ]] && dl_default=n   # --defaults never downloads
+  if yesno "Download $m (${SIZE[$m]}, ${WHY[$m]})?" "$dl_default"; then
+    if command -v curl >/dev/null 2>&1; then
+      prog=(-sS); [[ -t 1 ]] && prog=(--progress-bar)
+      if curl -L --fail "${prog[@]}" -o "$NEW_MODELS/$m.part" "${URL[$m]}"; then
+        mv "$NEW_MODELS/$m.part" "$NEW_MODELS/$m"; ok "$m"
+      else
+        rm -f "$NEW_MODELS/$m.part"; bad "download failed: ${URL[$m]}"
+      fi
+    else
+      bad "curl missing; fetch ${URL[$m]} into $NEW_MODELS by hand"
+    fi
+  fi
+done
+HAVE_LARGE=0; HAVE_TURBO=0
+[[ -s "$NEW_MODELS/ggml-large-v3.bin" ]] && HAVE_LARGE=1
+[[ -s "$NEW_MODELS/ggml-large-v3-turbo.bin" ]] && HAVE_TURBO=1
+DEF_MODEL="$LECTURE_MODEL"
+[[ "$DEF_MODEL" == large && "$HAVE_LARGE" == 0 && "$HAVE_TURBO" == 1 ]] && DEF_MODEL=turbo
+[[ "$DEF_MODEL" == turbo && "$HAVE_TURBO" == 0 && "$HAVE_LARGE" == 1 ]] && DEF_MODEL=large
+choose MC "Default model?" "$([[ $DEF_MODEL == turbo ]] && echo 2 || echo 1)" "large (accurate)" "turbo (fast)"
+NEW_MODEL="$([[ $MC == 2 ]] && echo turbo || echo large)"
+[[ "$HAVE_LARGE$HAVE_TURBO" == 00 ]] && warn "no transcription model present; lecture-transcribe will refuse to run"
+
+# ---------------------------------------------------------------- 4. microphone
+step "4/7  Microphone"
+NEW_MIC="$LECTURE_MIC"
+if command -v pactl >/dev/null 2>&1; then
+  mapfile -t SRCS < <(pactl list sources short 2>/dev/null | awk '{print $2}')
+  if [[ ${#SRCS[@]} -gt 0 ]]; then
+    DEFSRC="$(pactl get-default-source 2>/dev/null || true)"
+    labels=("system default${DEFSRC:+ ($DEFSRC)}")
+    for s in "${SRCS[@]}"; do
+      case "$s" in *.monitor) labels+=("$s  ${dim}(what the laptop plays: online lectures)${off}");; *) labels+=("$s");; esac
+    done
+    d=1; for i in "${!SRCS[@]}"; do [[ "${SRCS[$i]}" == "$LECTURE_MIC" ]] && d=$((i+2)); done
+    choose MIC_C "Which input should lecture-record use?" "$d" "${labels[@]}"
+    [[ "$MIC_C" == 1 ]] && NEW_MIC="" || NEW_MIC="${SRCS[$((MIC_C-2))]}"
+    if [[ "$ASSUME" == 0 ]] && command -v ffmpeg >/dev/null 2>&1 && yesno "Record a 3 second test and report the level?" y; then
+      T="$(mktemp --suffix=.wav)"
+      if ffmpeg -nostdin -loglevel error -y -f pulse -i "${NEW_MIC:-default}" -t 3 -ar 16000 -ac 1 "$T" 2>/dev/null; then
+        lvl="$(ffmpeg -i "$T" -af astats=metadata=1:reset=0 -f null /dev/null 2>&1 | grep -m1 'RMS level' | awk '{print $NF}')"
+        case "$lvl" in -inf|"") bad "silence: nothing reached the mic";; *) ok "RMS level $lvl dB (speech usually sits between -35 and -15)";; esac
+      else bad "could not record from ${NEW_MIC:-default}"; fi
+      rm -f "$T"
+    fi
+  else warn "no PulseAudio/PipeWire sources found"; fi
+else warn "pactl missing; set LECTURE_MIC by hand if the default input is wrong"; fi
+
+# ---------------------------------------------------------------- 5. notes engine
+step "5/7  Notes engine"
+echo "  ${dim}After transcription a prompt (transcript + slide text) is piped to a command that"
+echo "  prints Markdown. Anything works: a coding agent CLI, Ollama, llama.cpp, a curl to a server.${off}"
+opts=(); cmds=()
+command -v claude >/dev/null 2>&1 && { opts+=("Claude Code  ${dim}claude -p${off}"); cmds+=("claude -p --permission-mode plan"); }
+command -v codex  >/dev/null 2>&1 && { opts+=("Codex CLI  ${dim}codex exec -${off}"); cmds+=("codex exec -"); }
+command -v gemini >/dev/null 2>&1 && { opts+=("Gemini CLI  ${dim}gemini -p${off}"); cmds+=("gemini -p \"\$(cat)\""); }
+if command -v ollama >/dev/null 2>&1; then
+  om="$(ollama list 2>/dev/null | awk 'NR==2{print $1}')"
+  opts+=("Ollama  ${dim}ollama run ${om:-<model>}${off}"); cmds+=("ollama run ${om:-MODEL}")
+fi
+command -v llama-server >/dev/null 2>&1 && { opts+=("Local GGUF via llama-server (offline map-reduce)"); cmds+=("__local__"); }
+opts+=("Custom command (reads stdin, prints Markdown)" "None: transcripts only")
+cmds+=("__custom__" "__off__")
+d=${#opts[@]}  # default: none
+for i in "${!cmds[@]}"; do
+  [[ -n "$LECTURE_NOTES_CMD" && "${cmds[$i]}" == "$LECTURE_NOTES_CMD" ]] && d=$((i+1))
+  [[ "$LECTURE_NOTES_ENGINE" == local && "${cmds[$i]}" == "__local__" ]] && d=$((i+1))
+done
+[[ -z "$LECTURE_NOTES_CMD" && "$LECTURE_NOTES_ENGINE" == auto && ${#cmds[@]} -gt 2 && "${cmds[0]}" != "__local__" ]] && d=1
+choose EC "Which engine?" "$d" "${opts[@]}"
+sel="${cmds[$((EC-1))]}"
+NEW_ENGINE=cmd; NEW_CMD=""; NEW_LLM="$LECTURE_LLM"
+case "$sel" in
+  __off__)   NEW_ENGINE=off ;;
+  __local__) NEW_ENGINE=local
+             ask NEW_LLM "Path to the GGUF model" "${LECTURE_LLM:-$HOME/.local/share/llm-models/model.gguf}"
+             NEW_LLM="${NEW_LLM/#\~/$HOME}"
+             if [[ -f "$NEW_LLM" ]]; then ok "$NEW_LLM"; else warn "$NEW_LLM not found yet"; fi ;;
+  __custom__) ask NEW_CMD "Command" "${LECTURE_NOTES_CMD:-ollama run llama3.1}" ;;
+  *)         NEW_CMD="$sel"
+             [[ "$NEW_CMD" == *MODEL* ]] && ask NEW_CMD "Command (fill in the model)" "$NEW_CMD" ;;
+esac
+if [[ "$ASSUME" == 0 && "$NEW_ENGINE" == cmd && -n "$NEW_CMD" ]] && yesno "Send a one-line test prompt through it now?" y; then
+  out="$(printf 'Reply with exactly the word OK and nothing else.\n' | timeout 120 bash -c "$NEW_CMD" 2>&1 | tail -c 400)"
+  if printf '%s' "$out" | grep -qi "ok"; then ok "engine answered: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)"
+  else bad "unexpected answer (kept anyway): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-120)"; fi
+fi
+
+# ---------------------------------------------------------------- 6. courses
+step "6/7  Courses"
+CONF="$NEW_ROOT/courses.conf"
+if [[ -f "$CONF" ]]; then
+  n="$(grep -cvE '^\s*(#|$)' "$CONF")"
+  ok "$CONF exists ($n rows)"
+  ADD=0; [[ "$ASSUME" == 0 ]] && yesno "Add a course?" n && ADD=1
+else
+  cp "$LECTUREPIPE_LIB/../examples/courses.conf" "$CONF" 2>/dev/null || cp "$LECTUREPIPE_LIB/../share/courses.conf" "$CONF"
+  ok "wrote $CONF with example rows"
+  echo "  ${dim}Default language for courses without a row:${off}"
+  ask DL "Whisper language code (en, el, de, fr, es, ...)" "en"
+  sed -i -E "s/^DEFAULT[[:space:]]*\|[[:space:]]*[a-z-]+/DEFAULT | $DL/" "$CONF"
+  ADD=0; [[ "$ASSUME" == 0 ]] && yesno "Add your first course now?" y && ADD=1
+fi
+while [[ "$ADD" == 1 ]]; do
+  ask CC "Course code (what you will type: e.g. CS101)" ""
+  [[ -n "$CC" ]] || break
+  CC="$(printf '%s' "$CC" | tr '[:lower:]' '[:upper:]' | tr -d ' |')"
+  ask CL "Language code" "${DL:-en}"
+  echo "  ${dim}Glossary: lecturer name, tools, acronyms the lecturer says. Whisper keeps it in"
+  echo "  context for the whole recording. Under about 40 terms.${off}"
+  ask CG "Glossary" "University lecture."
+  NOFF=""; yesno "Write notes for this course?" y || NOFF=" | notes=off"
+  printf '%s | %s | %s%s\n' "$CC" "$CL" "${CG//|/,}" "$NOFF" >> "$CONF"
+  ok "added $CC"
+  yesno "Another?" n || ADD=0
+done
+
+# ---------------------------------------------------------------- 7. write + watcher
+step "7/7  Save"
+mkdir -p "$(dirname "$LECTUREPIPE_CONFIG")"
+[[ -f "$LECTUREPIPE_CONFIG" ]] && cp "$LECTUREPIPE_CONFIG" "$LECTUREPIPE_CONFIG.bak"
+q() { printf '%q' "$1"; }
+{
+  echo "# lecturepipe configuration, written by lecture-setup on $(date +%F)."
+  echo "# Shell syntax, sourced by every lecture-* command. Environment variables override."
+  echo "LECTURE_ROOT=$(q "$NEW_ROOT")"
+  echo "LECTURE_NOTES_ROOT=$(q "$NEW_VAULT")"
+  echo "WHISPER_MODELS=$(q "$NEW_MODELS")"
+  echo "LECTURE_MODEL=$(q "$NEW_MODEL")"
+  echo "LECTURE_MIC=$(q "$NEW_MIC")"
+  echo "LECTURE_NOTES_ENGINE=$(q "$NEW_ENGINE")"
+  echo "LECTURE_NOTES_CMD=$(q "$NEW_CMD")"
+  echo "LECTURE_LLM=$(q "$NEW_LLM")"
+  [[ -n "$LECTURE_GPU_CARD" ]] && echo "LECTURE_GPU_CARD=$(q "$LECTURE_GPU_CARD")"
+} > "$LECTUREPIPE_CONFIG"
+ok "wrote $LECTUREPIPE_CONFIG"
+
+if command -v systemctl >/dev/null 2>&1 && [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/lecture-watch.path" ]]; then
+  if yesno "Arm the watcher (transcribe automatically when a file lands in inbox/)?" y; then
+    systemctl --user daemon-reload 2>/dev/null
+    if systemctl --user enable --now lecture-watch.path >/dev/null 2>&1; then ok "lecture-watch.path active"
+    else warn "could not enable lecture-watch.path (no user systemd session?). Run lecture-watch by hand."; fi
+  fi
+fi
+
+echo
+echo "${bold}Done.${off} Next:"
+echo "  lecture-record ${bold}COURSE${off} \"topic\"      record (Ctrl-C to stop)"
+echo "  cp recording.m4a $NEW_ROOT/inbox/COURSE_$(date +%F)_topic.m4a   or drop a file in"
+echo "  lecture-status                       see what is happening"
+echo "  $CONF    add glossaries: the biggest accuracy lever"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Rebuild $LECTURE_ROOT/INDEX.md from the transcripts on disk.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+exec python3 -I "$LECTUREPIPE_LIB/index.py" "$LECTURE_ROOT"

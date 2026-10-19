@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Is anything recording, queued, or being transcribed right now?
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+ROOT="$LECTURE_ROOT"
+
+bold=$'\e[1m'; dim=$'\e[2m'; grn=$'\e[32m'; ylw=$'\e[33m'; red=$'\e[31m'; off=$'\e[0m'
+[[ -t 1 ]] || { bold=""; dim=""; grn=""; ylw=""; red=""; off=""; }
+
+echo "${bold}Recording${off}"
+if lp_recording_running; then
+  f=$(pgrep -af "ffmpeg.*-f pulse" | grep -oE '[^ ]+\.flac' | head -1)
+  echo "  ${grn}● in progress${off} → $(basename "${f:-?}")   ${dim}(Ctrl-C in that terminal to stop)${off}"
+else
+  echo "  ${dim}idle${off}"
+fi
+
+echo "${bold}Queue${off}"
+q=$(find "$ROOT/inbox" -type f 2>/dev/null | wc -l)
+if [[ "$q" -gt 0 ]]; then
+  find "$ROOT/inbox" -type f -printf "  ${ylw}⏳${off} %f  (%s bytes)\n" 2>/dev/null
+else
+  echo "  ${dim}empty${off}"
+fi
+
+echo "${bold}Transcribing${off}"
+if pgrep -f "whisper-cli" >/dev/null 2>&1; then
+  echo "  ${grn}● whisper running${off}"
+elif pgrep -f "notes_local.py|lecture-notes" >/dev/null 2>&1; then
+  echo "  ${grn}● writing notes${off}"
+else
+  echo "  ${dim}idle${off}"
+fi
+
+echo "${bold}Watcher${off}"
+if systemctl --user is-active --quiet lecture-watch.path 2>/dev/null; then
+  echo "  ${grn}armed${off} ${dim}(new files in inbox/ get picked up automatically)${off}"
+elif lp_recording_running; then
+  echo "  ${ylw}paused${off} ${dim}(normal while recording; resumes when you stop)${off}"
+else
+  echo "  ${red}STOPPED${off} ${dim}(run: systemctl --user start lecture-watch.path)${off}"
+fi
+
+echo "${bold}Notes engine${off}"
+eng="$(lp_resolve_notes_engine)"
+case "$eng" in
+  cmd)   echo "  ${grn}$LECTURE_NOTES_CMD${off}" ;;
+  local) echo "  ${grn}local${off} ${dim}($LECTURE_LLM)${off}" ;;
+  *)     echo "  ${ylw}off${off} ${dim}(transcripts only; run lecture-setup to pick one)${off}" ;;
+esac
+
+echo "${bold}Last 5 lectures${off}"
+found=0
+while IFS= read -r f; do
+  found=1
+  d=$(grep -m1 '^date:' "$f" 2>/dev/null | cut -d' ' -f2)
+  st=$(grep -m1 '^notes_status:' "$f" 2>/dev/null | awk '{print $2}')
+  case "$st" in done) m="${grn}✅ notes${off}";; pending) m="${ylw}⏳ notes pending${off}";; *) m="—";; esac
+  printf '  %s  %-42s %s\n' "${d:-?}" "$(basename "$f")" "$m"
+done < <(find -L "$ROOT/transcripts" -name '*.md' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-)
+[[ "$found" == 0 ]] && echo "  ${dim}none yet${off}"
+
+fails=$(find "$ROOT/inbox" -name '*.failed' 2>/dev/null | wc -l)
+[[ "$fails" -gt 0 ]] && echo "${red}${bold}$fails failed file(s)${off}, see $ROOT/.state/watch.log"
+exit 0

@@ -1,0 +1,42 @@
+# lecturepipe configuration. Shell syntax: this file is sourced.
+# Environment variables with the same names override these values.
+# Written by `lecture-setup`; edit by hand whenever you like.
+
+# Where recordings, transcripts and courses.conf live.
+LECTURE_ROOT="$HOME/lectures"
+
+# Your notes vault. Finished lectures are moved to
+#   $LECTURE_NOTES_ROOT/<anything>_<course>/lectures/NN/
+# and symlinked back. Leave empty to keep everything under LECTURE_ROOT.
+LECTURE_NOTES_ROOT=""
+
+# whisper.cpp GGML models (ggml-large-v3.bin, ggml-large-v3-turbo.bin, ggml-silero-v6.2.0.bin).
+WHISPER_MODELS="$HOME/.local/share/whisper-models"
+
+# Default model: large (accurate) or turbo (about 3x faster).
+LECTURE_MODEL="large"
+
+# PipeWire/PulseAudio source for lecture-record. Empty picks the system default.
+# List them with: pactl list sources short
+LECTURE_MIC=""
+
+# Notes engine.
+#   auto   use LECTURE_NOTES_CMD if set, else the first CLI found (claude, codex,
+#          gemini), else the local model, else skip notes
+#   cmd    always run LECTURE_NOTES_CMD
+#   local  always run the local llama-server map-reduce (needs LECTURE_LLM)
+#   off    transcript only
+LECTURE_NOTES_ENGINE="auto"
+
+# Any command that reads the prompt on stdin and prints Markdown on stdout.
+# Recipes in docs/notes-engines.md.
+LECTURE_NOTES_CMD=""
+
+# GGUF model for the local engine, for example a Gemma 3 12B Q4_K_M.
+LECTURE_LLM=""
+
+# Threads for whisper-cli. Defaults to nproc.
+#LECTURE_THREADS=8
+
+# lecture-quiet (AMD only): the DRM card whose clocks to cap, e.g. /sys/class/drm/card1/device
+LECTURE_GPU_CARD=""

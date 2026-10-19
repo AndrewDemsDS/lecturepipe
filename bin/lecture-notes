@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Write study notes for a transcribed lecture with whatever LLM you point it at.
+#
+#   lecture-notes <note.md> [slides.pdf ...]
+#
+# The prompt (transcript, slide text when a PDF sits next to the filed note, and
+# the outlines of other recordings of the same lecture) is built by
+# lib/notes.py and piped to $LECTURE_NOTES_CMD: any command that reads stdin and
+# prints Markdown. Claude Code, Codex, Gemini CLI, Ollama, llama.cpp, curl to an
+# OpenAI-compatible server: see docs/notes-engines.md. With no command the local
+# llama-server engine runs; with no model either, notes are skipped.
+#
+# Delete the "notes_status: done" line in the note to regenerate.
+# LECTURE_NOTES_SLIDES=off writes notes from the transcript alone.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+NOTE="${1:-}"
+[[ -f "$NOTE" ]] || { sed -n '2,14p' "$0"; exit 2; }
+shift
+
+grep -q "LECTURE-NOTES-START" "$NOTE" || { echo "no LECTURE-NOTES markers in $NOTE" >&2; exit 2; }
+if grep -q "^notes_status: done" "$NOTE"; then
+  echo "  notes already written, skipping (delete the notes_status line to redo)"; exit 0
+fi
+WORDS="$(grep -m1 '^words:' "$NOTE" | awk '{print $2}')"
+[[ "${WORDS:-0}" -ge 120 ]] || { echo "  transcript too short for notes, skipping"; exit 0; }
+
+ENGINE="$(lp_resolve_notes_engine)"
+case "$ENGINE" in
+  off)   echo "  no notes engine configured, transcript only (lecture-setup to pick one)"; exit 0 ;;
+  local) exec lecture-notes-local "$NOTE" ;;
+esac
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+
+SLIDE_ARGS=()
+for pdf in "$@"; do SLIDE_ARGS+=(--slides "$pdf"); done
+[[ "$LECTURE_NOTES_SLIDES" == "off" ]] && SLIDE_ARGS+=(--no-slides)
+
+python3 -I "$LECTUREPIPE_LIB/notes.py" prompt "$NOTE" \
+  --out "$WORK/prompt.txt" --tag-out "$WORK/tag" "${SLIDE_ARGS[@]}" || exit 1
+TAG="$(cat "$WORK/tag" 2>/dev/null || echo cmd)"
+
+echo "  notes: $WORDS words → $LECTURE_NOTES_CMD"
+if ! bash -c "$LECTURE_NOTES_CMD" < "$WORK/prompt.txt" > "$WORK/out.md" 2>"$WORK/err.txt"; then
+  echo "  ! notes command failed:" >&2; head -3 "$WORK/err.txt" >&2
+  if [[ -n "$LECTURE_LLM" && -f "$LECTURE_LLM" ]] && command -v llama-server >/dev/null 2>&1; then
+    echo "  falling back to the local model"; exec lecture-notes-local "$NOTE"
+  fi
+  exit 1
+fi
+[[ -s "$WORK/out.md" ]] || { echo "  ! notes command returned nothing" >&2; exit 1; }
+
+python3 -I "$LECTUREPIPE_LIB/notes.py" merge "$NOTE" --generated "$WORK/out.md" --engine "$TAG"

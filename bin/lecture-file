@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# File a transcribed lecture into its course folder in the notes vault:
+#   $LECTURE_NOTES_ROOT/<anything>_<code>/lectures/NN/  <- .md, .srt, .txt, .json, audio
+# Symlinks stay behind in $LECTURE_ROOT/{transcripts,audio}/<CODE>/ so the index,
+# status and note re-runs keep working.
+#
+#   lecture-file <note.md> [NN]
+# NN comes from the argument, else from "lecture-N" in the file name, else the
+# lecture goes to lectures/<date>/ to be sorted by hand.
+# With LECTURE_NOTES_ROOT unset this does nothing.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+NOTE="${1:-}"
+[[ -f "$NOTE" ]] || { echo "usage: lecture-file <note.md> [NN]" >&2; exit 2; }
+[[ -n "$LECTURE_NOTES_ROOT" ]] || exit 0
+NOTE="$(realpath -s "$NOTE")"
+[[ -L "$NOTE" ]] && { echo "  already filed: $(readlink "$NOTE")"; exit 0; }
+
+COURSE="$(grep -m1 '^course:' "$NOTE" | awk '{print $2}')"
+DATE="$(grep -m1 '^date:' "$NOTE" | awk '{print $2}')"
+AUDIO="$(grep -m1 '^audio:' "$NOTE" | sed -E 's/^audio:[[:space:]]*"?//; s/"?[[:space:]]*$//')"
+STEM="$(basename "$NOTE" .md)"
+SRCDIR="$(dirname "$NOTE")"
+
+CDIR="$(lp_vault_course_dir "$COURSE")"
+[[ -n "$CDIR" ]] || { echo "  ! no single $LECTURE_NOTES_ROOT/*_${COURSE,,} folder for $COURSE; not filed" >&2; exit 1; }
+
+NN="${2:-}"
+[[ -n "$NN" ]] || NN="$(lp_lecture_number "$STEM")"
+if [[ -n "$NN" ]]; then
+  DEST="$CDIR/lectures/$(printf '%02d' "$((10#$NN))")"
+else
+  DEST="$CDIR/lectures/$DATE"
+  echo "  ! no lecture number in the name; filing under lectures/$DATE"
+fi
+mkdir -p "$DEST"
+
+move() {  # move $1 into $DEST and leave a symlink behind
+  local src="$1" dst
+  dst="$DEST/$(basename "$1")"
+  [[ -e "$src" && ! -L "$src" ]] || return 0
+  if [[ -e "$dst" ]]; then echo "  ! exists, left in place: $dst" >&2; return 0; fi
+  mv "$src" "$dst" && ln -s "$dst" "$src"
+}
+
+for ext in srt txt json; do move "$SRCDIR/$STEM.$ext"; done
+if [[ -n "$AUDIO" && -f "$AUDIO" && ! -L "$AUDIO" ]]; then
+  move "$AUDIO"
+  sed -i -E "s|^audio:.*|audio: \"$DEST/$(basename "$AUDIO")\"|" "$NOTE"
+fi
+move "$NOTE"
+
+echo "  ✔ filed → $DEST"

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run a lecture job, but not while a recording is in progress.
+# Waits for the mic to be released, then runs the job niced and de-prioritised.
+#
+#   lecture-later lecture-notes ~/lectures/transcripts/NET301/2026-09-24_x.md
+#   lecture-later --quiet lecture-notes ...     # also cap GPU/CPU power (AMD)
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && { QUIET=1; shift; }
+[[ $# -ge 1 ]] || { sed -n '2,6p' "$0"; exit 2; }
+
+if lp_recording_running; then
+  echo "⏸ a recording is in progress, holding off"
+  echo "  will start automatically once the mic is free"
+  while lp_recording_running; do sleep 20; done
+  sleep 10   # let the file settle
+  echo "▶ mic free, starting"
+fi
+
+if [[ "$QUIET" == 1 ]]; then
+  exec lecture-quiet "$@"
+fi
+exec nice -n 19 ionice -c 3 "$@"

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Notes from the local GGUF model through llama-server (map-reduce). Offline.
+#   lecture-notes-local <note.md>
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[[ -n "$LECTURE_LLM" ]] || { echo "error: LECTURE_LLM is not set (run lecture-setup)" >&2; exit 2; }
+exec python3 -I "$LECTUREPIPE_LIB/notes_local.py" --model "$LECTURE_LLM" --ctx "$LECTURE_LLM_CTX" "$@"

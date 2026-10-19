@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Transcribe one lecture recording with whisper.cpp, write the note, run the
+# notes pass, file it. Nothing but the optional notes pass leaves this machine.
+#
+#   lecture-transcribe <audio-or-video> [-m turbo|large] [-c COURSE] [--no-notes]
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+MODEL_KIND="$LECTURE_MODEL"
+COURSE=""
+NOTES=1
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -m|--model)  MODEL_KIND="$2"; shift 2 ;;
+    -c|--course) COURSE="$2";     shift 2 ;;
+    --no-notes)  NOTES=0;         shift   ;;
+    -h|--help)   sed -n '2,5p' "$0"; exit 0 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+[[ ${#ARGS[@]} -ge 1 ]] || { echo "error: no input file. see --help" >&2; exit 2; }
+SRC="$(realpath "${ARGS[0]}")"
+[[ -f "$SRC" ]] || { echo "error: no such file: $SRC" >&2; exit 2; }
+for c in ffmpeg ffprobe whisper-cli python3; do
+  command -v "$c" >/dev/null 2>&1 || { echo "error: $c not found (run lecture-setup)" >&2; exit 1; }
+done
+
+case "$MODEL_KIND" in
+  turbo) MODEL="$WHISPER_MODELS/ggml-large-v3-turbo.bin" ;;
+  large) MODEL="$WHISPER_MODELS/ggml-large-v3.bin" ;;
+  *) echo "error: --model must be turbo or large" >&2; exit 2 ;;
+esac
+[[ -f "$MODEL" ]] || { echo "error: model missing: $MODEL (run lecture-setup)" >&2; exit 2; }
+VAD_MODEL="$WHISPER_MODELS/ggml-silero-v6.2.0.bin"
+VAD_ARGS=()
+[[ -f "$VAD_MODEL" ]] && VAD_ARGS=(--vad -vm "$VAD_MODEL" -vt 0.5 -vsd 300 -vmsd 30 -vp 100)
+
+BASE="$(basename "$SRC")"
+STEM="${BASE%.*}"
+
+# Course code: explicit flag, else the first "_"-delimited token of the filename
+# (what lecture-record writes), else a leading letters+digits code like CS101.
+if [[ -z "$COURSE" ]]; then
+  first="${STEM%%_*}"
+  if [[ "$STEM" == *_* && "$first" =~ ^[A-Za-z][A-Za-z0-9-]{1,11}$ ]]; then
+    COURSE="$first"
+  else
+    COURSE="$(printf '%s' "$STEM" | grep -oiE '^[A-Za-z]{2,6}[0-9]{2,4}' || true)"
+  fi
+fi
+COURSE="${COURSE:-misc}"
+COURSE="$(printf '%s' "$COURSE" | tr '[:lower:]' '[:upper:]')"
+
+# Date: from the filename if present, else the file's mtime.
+DATE="$(printf '%s' "$STEM" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
+[[ -n "$DATE" ]] || DATE="$(date -r "$SRC" +%F)"
+
+ROW="$(lp_course_lookup "$COURSE")"
+[[ -n "$ROW" ]] || ROW="$(lp_course_lookup DEFAULT)"
+IFS=$'\t' read -r LANG_CODE PROMPT OPTS <<< "${ROW:-}"
+LANG_CODE="${LANG_CODE:-en}"
+PROMPT="${PROMPT:-}"
+[[ "${OPTS:-}" == "notes=off" ]] && NOTES=0
+
+SLUG="$(printf '%s' "$STEM" \
+  | sed -E "s/^${COURSE}[-_ ]*//I; s/[0-9]{4}-[0-9]{2}-[0-9]{2}[-_ ]*//; s/[^[:alnum:]._-]+/-/g; s/^-+|-+$//g")"
+[[ -n "$SLUG" ]] || SLUG="lecture"
+NAME="${DATE}_${SLUG}"
+
+OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"
+AUDIODIR="$LECTURE_ROOT/audio/$COURSE"
+mkdir -p "$OUTDIR" "$AUDIODIR"
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WAV="$WORK/audio.wav"
+
+echo "▶ $COURSE / $DATE: $SLUG"
+echo "  model=$MODEL_KIND  lang=$LANG_CODE"
+
+# Normalise anything (m4a, mp4, mkv, opus, mp3, wav) to what Whisper wants.
+# adeclip repairs clipped peaks; highpass strips lecture-hall rumble; loudnorm
+# evens out a roaming lecturer. Deliberately NO denoising: RNNoise measurably
+# hurt accuracy on a real take (dropped a clause, 2 word errors), and Whisper
+# is trained on noisy speech.
+echo "  [1/3] decoding audio…"
+ffmpeg -nostdin -loglevel error -y -i "$SRC" \
+  -af "adeclip,highpass=f=80,loudnorm=I=-18:LRA=11:TP=-2" \
+  -ar 16000 -ac 1 -c:a pcm_s16le "$WAV"
+
+DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$WAV" 2>/dev/null | cut -d. -f1)"
+[[ "$DUR" =~ ^[0-9]+$ ]] || DUR=0
+printf '  duration: %02d:%02d:%02d\n' $((DUR/3600)) $((DUR%3600/60)) $((DUR%60))
+
+# -mc 0 (max-context 0) is load-bearing: Whisper conditions each window on its
+# own previous output, so one repeated sentence can reinforce itself into an
+# endless loop. It cost 60 minutes of a real lecture once. Do not remove.
+echo "  [2/3] transcribing…"
+START=$(date +%s)
+PROMPT_ARGS=()
+[[ -n "$PROMPT" ]] && PROMPT_ARGS=(--prompt "$PROMPT" --carry-initial-prompt)
+whisper-cli \
+  -m "$MODEL" -f "$WAV" \
+  -l "$LANG_CODE" \
+  "${PROMPT_ARGS[@]}" \
+  "${VAD_ARGS[@]}" \
+  -bs 5 -bo 5 -et 2.4 -lpt -1.0 -sns \
+  -mc 0 \
+  -t "$LECTURE_THREADS" -ml 0 \
+  -osrt -otxt -oj \
+  -of "$OUTDIR/$NAME" \
+  -pp 2>&1 | grep -vE '^(ggml_vulkan|load_backend|whisper_)' || true
+[[ -s "$OUTDIR/$NAME.srt" ]] || { echo "error: whisper produced no output" >&2; exit 1; }
+echo "  transcribed in $(( $(date +%s) - START ))s"
+
+echo "  [3/3] writing note…"
+python3 -I "$LECTUREPIPE_LIB/srt2md.py" \
+  --srt "$OUTDIR/$NAME.srt" \
+  --out "$OUTDIR/$NAME.md" \
+  --course "$COURSE" --date "$DATE" --title "$SLUG" \
+  --lang "$LANG_CODE" --model "$MODEL_KIND" \
+  --duration "$DUR" --source "$AUDIODIR/$BASE"
+
+# Keep the source audio, out of the inbox.
+[[ "$SRC" == "$AUDIODIR/$BASE" ]] || mv -n "$SRC" "$AUDIODIR/$BASE"
+
+if [[ "$NOTES" == 1 ]]; then
+  lecture-notes "$OUTDIR/$NAME.md" || echo "  ! notes pass failed (transcript is safe)"
+fi
+
+# Filing into the vault never fails the run.
+lecture-file "$OUTDIR/$NAME.md" || echo "  ! filing failed (files still in $OUTDIR)"
+lecture-index >/dev/null 2>&1 || true
+
+echo "✔ $OUTDIR/$NAME.md"

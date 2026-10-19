@@ -1,0 +1,15 @@
+1
+00:00:00,000 --> 00:00:03,500
+Good morning everyone. Today we look at routing protocols.
+
+2
+00:00:03,600 --> 00:00:08,200
+We start with distance vector, then link state.
+
+3
+00:00:12,000 --> 00:00:15,000
+RIP counts hops. OSPF floods link state advertisements.
+
+4
+00:00:15,100 --> 00:00:19,900
+Remember the assignment is due next Friday.

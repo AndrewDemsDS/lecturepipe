@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Drain the lecture inbox. Invoked by lecture-watch.path, or by hand.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+INBOX="$LECTURE_ROOT/inbox"
+LOCK="$LECTURE_ROOT/.state/watch.lock"
+LOG="$LECTURE_ROOT/.state/watch.log"
+mkdir -p "$INBOX" "$LECTURE_ROOT/.state"
+
+# One drain at a time: the path unit can fire while we are still working.
+exec 9>"$LOCK"
+flock -n 9 || { echo "already running"; exit 0; }
+
+log() { printf '%s %s\n' "$(date +'%F %T')" "$*" | tee -a "$LOG"; }
+
+shopt -s nullglob nocaseglob
+for f in "$INBOX"/*.{flac,wav,mp3,m4a,ogg,opus,mp4,mkv,webm,aac,wma}; do
+  [[ -f "$f" ]] || continue
+
+  # Wait for the file to stop growing: someone may still be recording into it.
+  prev=-1
+  for _ in {1..60}; do
+    cur=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    [[ "$cur" == "$prev" && "$cur" -gt 0 ]] && break
+    prev=$cur; sleep 5
+  done
+  [[ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt 0 ]] || { log "skip (empty): $(basename "$f")"; continue; }
+
+  log "start: $(basename "$f")"
+  if lecture-transcribe "$f" >>"$LOG" 2>&1; then
+    log "done:  $(basename "$f")"
+  else
+    log "FAIL:  $(basename "$f"), left in inbox"
+    mv -n "$f" "$INBOX/$(basename "$f").failed" 2>/dev/null
+  fi
+done
