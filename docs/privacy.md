@@ -41,7 +41,7 @@ Nothing, unless you configure it:
 ## Lawful basis, in plain terms
 
 - **Tell people.** Recording or transcribing someone without their knowledge is the
-  problem regulators and universities actually act on. `lecture-record` prints a
+  problem regulators and universities act on. `lecture-record` prints a
   reminder every time. Ask the lecturer once at the start of term; many will say yes to a
   transcript for personal study and no to a recording that could be shared.
 - **Personal study is the narrowest footprint.** Notes for your own revision, kept on your
