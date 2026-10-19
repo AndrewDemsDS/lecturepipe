@@ -10,6 +10,7 @@ source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 MODEL_KIND="$LECTURE_MODEL"
 COURSE=""
 NOTES=1
+FROM_SRT=""; DATE_ARG=""; TITLE_ARG=""; DUR_ARG=""
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -17,15 +18,25 @@ while [[ $# -gt 0 ]]; do
     -m|--model)  MODEL_KIND="$2"; shift 2 ;;
     -c|--course) COURSE="$2";     shift 2 ;;
     --no-notes)  NOTES=0;         shift   ;;
+    # Used by lecture-live: the SRT already exists, there is no audio to keep.
+    --from-srt)  FROM_SRT="$2";   shift 2 ;;
+    --date)      DATE_ARG="$2";   shift 2 ;;
+    --title)     TITLE_ARG="$2";  shift 2 ;;
+    --duration)  DUR_ARG="$2";    shift 2 ;;
     -h|--help)   sed -n '2,5p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
 
-[[ ${#ARGS[@]} -ge 1 ]] || { echo "error: no input file. see --help" >&2; exit 2; }
-SRC="$(realpath "${ARGS[0]}")"
+if [[ -n "$FROM_SRT" ]]; then
+  SRC="$(realpath "$FROM_SRT")"
+else
+  [[ ${#ARGS[@]} -ge 1 ]] || { echo "error: no input file. see --help" >&2; exit 2; }
+  SRC="$(realpath "${ARGS[0]}")"
+fi
 [[ -f "$SRC" ]] || { echo "error: no such file: $SRC" >&2; exit 2; }
-for c in ffmpeg ffprobe whisper-cli python3; do
+NEEDED=(python3); [[ -z "$FROM_SRT" ]] && NEEDED+=(ffmpeg ffprobe whisper-cli)
+for c in "${NEEDED[@]}"; do
   command -v "$c" >/dev/null 2>&1 || { echo "error: $c not found (run lecture-setup)" >&2; exit 1; }
 done
 
@@ -34,7 +45,7 @@ case "$MODEL_KIND" in
   large) MODEL="$WHISPER_MODELS/ggml-large-v3.bin" ;;
   *) echo "error: --model must be turbo or large" >&2; exit 2 ;;
 esac
-[[ -f "$MODEL" ]] || { echo "error: model missing: $MODEL (run lecture-setup)" >&2; exit 2; }
+[[ -n "$FROM_SRT" || -f "$MODEL" ]] || { echo "error: model missing: $MODEL (run lecture-setup)" >&2; exit 2; }
 VAD_MODEL="$WHISPER_MODELS/ggml-silero-v6.2.0.bin"
 VAD_ARGS=()
 [[ -f "$VAD_MODEL" ]] && VAD_ARGS=(--vad -vm "$VAD_MODEL" -vt 0.5 -vsd 300 -vmsd 30 -vp 100)
@@ -56,7 +67,8 @@ COURSE="${COURSE:-misc}"
 COURSE="$(printf '%s' "$COURSE" | tr '[:lower:]' '[:upper:]')"
 
 # Date: from the filename if present, else the file's mtime.
-DATE="$(printf '%s' "$STEM" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
+DATE="$DATE_ARG"
+[[ -n "$DATE" ]] || DATE="$(printf '%s' "$STEM" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
 [[ -n "$DATE" ]] || DATE="$(date -r "$SRC" +%F)"
 
 ROW="$(lp_course_lookup "$COURSE")"
@@ -66,7 +78,8 @@ LANG_CODE="${LANG_CODE:-en}"
 PROMPT="${PROMPT:-}"
 [[ "${OPTS:-}" == "notes=off" ]] && NOTES=0
 
-SLUG="$(printf '%s' "$STEM" \
+SLUG="$TITLE_ARG"
+[[ -n "$SLUG" ]] || SLUG="$(printf '%s' "$STEM" \
   | sed -E "s/^${COURSE}[-_ ]*//I; s/[0-9]{4}-[0-9]{2}-[0-9]{2}[-_ ]*//; s/[^[:alnum:]._-]+/-/g; s/^-+|-+$//g")"
 [[ -n "$SLUG" ]] || SLUG="lecture"
 NAME="${DATE}_${SLUG}"
@@ -75,6 +88,15 @@ OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"
 AUDIODIR="$LECTURE_ROOT/audio/$COURSE"
 mkdir -p "$OUTDIR" "$AUDIODIR"
 
+if [[ -n "$FROM_SRT" ]]; then
+  # Live mode: whisper already ran segment by segment, no audio exists.
+  DUR="${DUR_ARG:-0}"; [[ "$DUR" =~ ^[0-9]+$ ]] || DUR=0
+  AUDIO_REF="none (live, not recorded)"
+  echo "▶ $COURSE / $DATE: $SLUG (live)"
+  [[ "$SRC" == "$OUTDIR/$NAME.srt" ]] || mv -f "$SRC" "$OUTDIR/$NAME.srt"
+  [[ -f "${SRC%.srt}.txt" && "${SRC%.srt}.txt" != "$OUTDIR/$NAME.txt" ]] && mv -f "${SRC%.srt}.txt" "$OUTDIR/$NAME.txt"
+else
+AUDIO_REF="$AUDIODIR/$BASE"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 WAV="$WORK/audio.wav"
 
@@ -115,6 +137,7 @@ whisper-cli \
   -pp 2>&1 | grep -vE '^(ggml_vulkan|load_backend|whisper_)' || true
 [[ -s "$OUTDIR/$NAME.srt" ]] || { echo "error: whisper produced no output" >&2; exit 1; }
 echo "  transcribed in $(( $(date +%s) - START ))s"
+fi
 
 echo "  [3/3] writing note…"
 python3 -I "$LECTUREPIPE_LIB/srt2md.py" \
@@ -122,10 +145,10 @@ python3 -I "$LECTUREPIPE_LIB/srt2md.py" \
   --out "$OUTDIR/$NAME.md" \
   --course "$COURSE" --date "$DATE" --title "$SLUG" \
   --lang "$LANG_CODE" --model "$MODEL_KIND" \
-  --duration "$DUR" --source "$AUDIODIR/$BASE"
+  --duration "$DUR" --source "$AUDIO_REF"
 
-# Keep the source audio, out of the inbox.
-[[ "$SRC" == "$AUDIODIR/$BASE" ]] || mv -n "$SRC" "$AUDIODIR/$BASE"
+# Keep the source audio, out of the inbox (record mode only).
+if [[ -z "$FROM_SRT" && "$SRC" != "$AUDIODIR/$BASE" ]]; then mv -n "$SRC" "$AUDIODIR/$BASE"; fi
 
 if [[ "$NOTES" == 1 ]]; then
   lecture-notes "$OUTDIR/$NAME.md" || echo "  ! notes pass failed (transcript is safe)"

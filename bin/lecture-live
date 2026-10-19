@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Transcribe a lecture while it happens, without keeping any audio.
+#
+#   lecture-live COURSE ["topic"]        (what lecture-record runs in live mode)
+#
+# ffmpeg captures the microphone into fixed-length raw PCM segments in RAM
+# ($XDG_RUNTIME_DIR, a tmpfs). As soon as a segment is complete, whisper-cli
+# transcribes it with the full model and the course glossary, the text is
+# appended to the transcript, and the segment is deleted. At most one segment
+# of audio exists at any moment, in memory only; nothing is written to disk
+# except text. Ctrl-C ends the lecture: the last segment is transcribed, then
+# the note, notes pass, filing and index run as usual.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then sed -n '2,12p' "$0"; exit 0; fi
+for c in ffmpeg whisper-cli python3; do
+  command -v "$c" >/dev/null 2>&1 || { echo "✖ $c not found (run lecture-setup)" >&2; exit 1; }
+done
+
+COURSE="$(printf '%s' "${1:-misc}" | tr '[:lower:]' '[:upper:]')"
+TOPIC="${2:-}"
+SLUG="$(printf '%s' "$TOPIC" | tr '[:upper:] ' '[:lower:]-' | sed -E 's/[^a-z0-9-]+//g; s/-+/-/g; s/^-|-$//g')"
+[[ -n "$SLUG" ]] || SLUG="lecture"
+DATE="$(date +%F)"
+SEG="$LECTURE_LIVE_SEGMENT"
+
+case "$LECTURE_MODEL" in
+  turbo) MODEL="$WHISPER_MODELS/ggml-large-v3-turbo.bin" ;;
+  *)     MODEL="$WHISPER_MODELS/ggml-large-v3.bin" ;;
+esac
+[[ -f "$MODEL" ]] || { echo "✖ model missing: $MODEL (run lecture-setup)" >&2; exit 2; }
+VAD_ARGS=(); VAD_MODEL="$WHISPER_MODELS/ggml-silero-v6.2.0.bin"
+[[ -f "$VAD_MODEL" ]] && VAD_ARGS=(--vad -vm "$VAD_MODEL" -vt 0.5 -vsd 300 -vmsd 30 -vp 100)
+
+ROW="$(lp_course_lookup "$COURSE")"; [[ -n "$ROW" ]] || ROW="$(lp_course_lookup DEFAULT)"
+IFS=$'\t' read -r LANG_CODE PROMPT _ <<< "${ROW:-}"
+LANG_CODE="${LANG_CODE:-en}"
+PROMPT_ARGS=(); [[ -n "${PROMPT:-}" ]] && PROMPT_ARGS=(--prompt "$PROMPT" --carry-initial-prompt)
+
+# RAM only. Refuse to fall back to disk silently.
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if ! findmnt -no FSTYPE "$RUN" 2>/dev/null | grep -qE '^(tmpfs|ramfs)$'; then
+  if [[ "${LECTURE_LIVE_ALLOW_DISK:-0}" == 1 ]]; then
+    RUN="$(mktemp -d)"; echo "! no tmpfs runtime dir; segments go through $RUN (LECTURE_LIVE_ALLOW_DISK=1)"
+  else
+    echo "✖ $RUN is not a tmpfs, so segments would touch the disk. Set LECTURE_LIVE_ALLOW_DISK=1 to accept, or use lecture-record --keep-audio." >&2
+    exit 1
+  fi
+fi
+WORK="$RUN/lecturepipe/$$"; mkdir -p "$WORK"; chmod 700 "$WORK"
+SRT="$WORK/live.srt"; TXT="$WORK/live.txt"; : > "$SRT"; : > "$TXT"
+
+# Hold the queue: transcribing earlier lectures would compete for the GPU.
+WATCHER_WAS_ACTIVE=0
+if systemctl --user is-active --quiet lecture-watch.path 2>/dev/null; then
+  WATCHER_WAS_ACTIVE=1; systemctl --user stop lecture-watch.path 2>/dev/null || true
+fi
+
+# ffmpeg must get exactly one stop signal: a second one makes it abandon the
+# segment it is closing ("Immediate exit requested"), and the last minutes of
+# the lecture with it. Ctrl-C reaches every process in the terminal's group, so
+# ffmpeg is started with SIGINT ignored and we stop it ourselves with one TERM.
+FFPID=""; STOP_SENT=0
+stop_ffmpeg() {
+  [[ -n "$FFPID" && "$STOP_SENT" == 0 ]] || return 0
+  STOP_SENT=1
+  local pid; pid="$(pgrep -P "$FFPID" -x ffmpeg | head -1)"
+  [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null
+}
+cleanup() {
+  stop_ffmpeg
+  shred -u "$WORK"/seg-* 2>/dev/null || rm -f "$WORK"/seg-*
+  rm -rf "$WORK"; rmdir "$RUN/lecturepipe" 2>/dev/null
+  [[ "$WATCHER_WAS_ACTIVE" == 1 ]] && systemctl --user start lecture-watch.path 2>/dev/null || true
+}
+trap stop_ffmpeg INT TERM
+trap cleanup EXIT
+
+echo "● live transcription → $COURSE / $DATE: $SLUG"
+echo "  model=$LECTURE_MODEL  lang=$LANG_CODE  segment=${SEG}s  audio: RAM only, never saved"
+[[ -n "$LECTURE_MIC" ]] && echo "  source: $LECTURE_MIC"
+echo "  (the people in the room should know they are being transcribed)"
+echo "  press Ctrl-C when the lecture ends"
+echo
+
+# ffmpeg streams raw PCM; split cuts it into exact SEG-second files (16 kHz mono
+# s16le = 32000 bytes/s). Raw PCM has no trailer, so the segment cut off by Ctrl-C
+# is as complete as the others. ffmpeg ignores the terminal's SIGINT; we stop it.
+( trap '' INT
+  ffmpeg -nostdin -loglevel fatal \
+    -f pulse -i "${LECTURE_MIC:-default}" \
+    -ar 16000 -ac 1 -f s16le - \
+  | split -b "$(( SEG * 32000 ))" -d -a 4 --additional-suffix=.raw - "$WORK/seg-" ) &
+FFPID=$!
+
+transcribe_segment() {  # $1 = index
+  local i="$1" raw wav out
+  raw="$WORK/seg-$(printf '%04d' "$i").raw"; wav="$WORK/seg-$i.wav"; out="$WORK/out-$i"
+  [[ -s "$raw" ]] || { rm -f "$raw"; return 0; }
+  # Raw PCM needs no trailer, so a segment cut off by Ctrl-C is still complete.
+  # Wrap it in a WAV header (in RAM) for whisper-cli.
+  ffmpeg -nostdin -loglevel error -y -f s16le -ar 16000 -ac 1 -i "$raw" "$wav"
+  shred -u "$raw" 2>/dev/null || rm -f "$raw"
+  whisper-cli -m "$MODEL" -f "$wav" -l "$LANG_CODE" "${PROMPT_ARGS[@]}" "${VAD_ARGS[@]}" \
+    -bs 5 -bo 5 -et 2.4 -lpt -1.0 -sns -mc 0 -t "$LECTURE_THREADS" -ml 0 \
+    -osrt -otxt -of "$out" -np >/dev/null 2>&1 || echo "  ! whisper failed on segment $i" >&2
+  shred -u "$wav" 2>/dev/null || rm -f "$wav"
+  if [[ -s "$out.srt" ]]; then
+    python3 -I "$LECTUREPIPE_LIB/srtshift.py" "$out.srt" --offset "$(( i * SEG ))" --append "$SRT" >/dev/null
+    cat "$out.txt" >> "$TXT" 2>/dev/null
+    # show what was just heard
+    sed -E 's/^[[:space:]]+//' "$out.txt" | grep -v '^$' | tail -n 4 | sed "s/^/  [$(printf '%02d:%02d' $(( i*SEG/3600 )) $(( i*SEG%3600/60 )))] /"
+  fi
+  rm -f "$out.srt" "$out.txt"
+}
+
+NEXT=0
+while :; do
+  # segment N is complete once N+1 exists, or once ffmpeg has exited
+  if [[ -e "$WORK/seg-$(printf '%04d' $((NEXT+1))).raw" ]]; then
+    transcribe_segment "$NEXT"; NEXT=$((NEXT+1)); continue
+  fi
+  if ! kill -0 "$FFPID" 2>/dev/null; then
+    wait "$FFPID" 2>/dev/null; FFPID=""; STOP_SENT=1
+    while [[ -e "$WORK/seg-$(printf '%04d' "$NEXT").raw" ]]; do transcribe_segment "$NEXT"; NEXT=$((NEXT+1)); done
+    break
+  fi
+  sleep 1
+done
+trap - INT TERM
+
+DUR=$(( NEXT * SEG ))   # upper bound; the last segment is usually shorter
+LAST_END="$(grep -oE -- '--> [0-9:,]+' "$SRT" | tail -1 | sed -E 's/--> ([0-9]{2}):([0-9]{2}):([0-9]{2}).*/\1 \2 \3/')"
+if [[ -n "$LAST_END" ]]; then read -r h m s <<< "$LAST_END"; DUR=$(( 10#$h*3600 + 10#$m*60 + 10#$s )); fi
+
+echo
+if [[ ! -s "$SRT" ]]; then
+  echo "✖ nothing transcribed (silence, or the wrong input). Check with: pactl list sources short"
+  exit 1
+fi
+OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"; mkdir -p "$OUTDIR"
+NAME="${DATE}_${SLUG}"; n=2; while [[ -e "$OUTDIR/$NAME.md" ]]; do NAME="${DATE}_${SLUG}-${n}"; n=$((n+1)); done
+mv "$SRT" "$OUTDIR/$NAME.srt"; mv "$TXT" "$OUTDIR/$NAME.txt"
+echo "✔ transcript saved, no audio kept"
+lecture-transcribe --from-srt "$OUTDIR/$NAME.srt" -c "$COURSE" --date "$DATE" --title "$SLUG" --duration "$DUR"

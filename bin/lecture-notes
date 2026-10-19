@@ -44,6 +44,7 @@ python3 -I "$LECTUREPIPE_LIB/notes.py" prompt "$NOTE" \
 TAG="$(cat "$WORK/tag" 2>/dev/null || echo cmd)"
 
 echo "  notes: $WORDS words → $LECTURE_NOTES_CMD"
+[[ "${LP_AUTO_CLOUD:-0}" == 1 ]] && echo "  note: engine auto-detected; the transcript is sent to that service. Pin or change it with lecture-setup."
 if ! bash -c "$LECTURE_NOTES_CMD" < "$WORK/prompt.txt" > "$WORK/out.md" 2>"$WORK/err.txt"; then
   echo "  ! notes command failed:" >&2; head -3 "$WORK/err.txt" >&2
   if [[ -n "$LECTURE_LLM" && -f "$LECTURE_LLM" ]] && command -v llama-server >/dev/null 2>&1; then

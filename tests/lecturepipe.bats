@@ -8,8 +8,12 @@ setup() {
   export XDG_CONFIG_HOME="$HOME/.config"
   export LECTURE_ROOT="$HOME/lectures"
   mkdir -p "$LECTURE_ROOT"
-  export PATH="$REPO/bin:$PATH"
-  unset LECTURE_NOTES_ROOT LECTURE_NOTES_CMD LECTURE_NOTES_ENGINE LECTURE_LLM
+  # Never touch the real user systemd from a test: systemctl ignores HOME.
+  mkdir -p "$BATS_TEST_TMPDIR/stubs"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *is-active* ]] && exit 3\nexit 0\n' > "$BATS_TEST_TMPDIR/stubs/systemctl"
+  chmod +x "$BATS_TEST_TMPDIR/stubs/systemctl"
+  export PATH="$BATS_TEST_TMPDIR/stubs:$REPO/bin:$PATH"
+  unset LECTURE_NOTES_ROOT LECTURE_NOTES_CMD LECTURE_NOTES_ENGINE LECTURE_LLM LECTURE_RECORD_MODE
 }
 
 mknote() {  # mknote path course lang words
@@ -192,10 +196,10 @@ mknote() {  # mknote path course lang words
 out="${@: -1}"; printf 'x' > "$out"
 SH
   chmod +x "$BATS_TEST_TMPDIR/fakebin/ffmpeg"
-  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record net301 "Routing Protocols: OSPF & BGP"
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio net301 "Routing Protocols: OSPF & BGP"
   [ "$status" -eq 0 ]
   [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_routing-protocols-ospf-bgp.flac" ]
-  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record net301 "Routing Protocols: OSPF & BGP"
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio net301 "Routing Protocols: OSPF & BGP"
   [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_routing-protocols-ospf-bgp-2.flac" ]
 }
 
@@ -219,6 +223,7 @@ SH
   [ -f "$XDG_CONFIG_HOME/lecturepipe/config" ]
   grep -q "^LECTURE_ROOT=$HOME/lectures" "$XDG_CONFIG_HOME/lecturepipe/config"
   grep -q "^LECTURE_MODEL=turbo" "$XDG_CONFIG_HOME/lecturepipe/config"
+  grep -q "^LECTURE_RECORD_MODE=live" "$XDG_CONFIG_HOME/lecturepipe/config"
   grep -q "^DEFAULT | en" "$LECTURE_ROOT/courses.conf"
   [ -d "$LECTURE_ROOT/inbox" ]
   # re-running keeps values and does not duplicate rows
@@ -257,4 +262,134 @@ SH
   PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-transcribe "$LECTURE_ROOT/inbox/cs101 intro.m4a"
   [ "$status" -eq 0 ]
   ls "$LECTURE_ROOT/transcripts/CS101/"*_intro.md
+}
+
+@test "lecture-forget erases audio, derived files, symlinks and vault copies" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  mkdir -p "$LECTURE_NOTES_ROOT/networks_net301" "$LECTURE_ROOT/transcripts/NET301" "$LECTURE_ROOT/audio/NET301"
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-19_lecture-7-routing.md"; mknote "$N" NET301 en
+  : > "${N%.md}.srt"; : > "${N%.md}.json"
+  printf audio > "$LECTURE_ROOT/audio/NET301/rec.flac"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/rec.flac\"|" "$N"
+  lecture-file "$N" >/dev/null
+  D="$LECTURE_NOTES_ROOT/networks_net301/lectures/07"
+  [ -f "$D/rec.flac" ]
+  run lecture-forget "$N" --yes
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/rec.flac" ]; [ ! -e "$D/2026-10-19_lecture-7-routing.md" ]; [ ! -e "$D/2026-10-19_lecture-7-routing.srt" ]
+  [ ! -e "$N" ]; [ ! -L "$N" ]; [ ! -L "$LECTURE_ROOT/audio/NET301/rec.flac" ]
+  [ ! -d "$D" ]
+}
+
+@test "lecture-forget --audio keeps the transcript" {
+  mkdir -p "$LECTURE_ROOT/transcripts/NET301" "$LECTURE_ROOT/audio/NET301"
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-19_x.md"; mknote "$N" NET301 en
+  printf audio > "$LECTURE_ROOT/audio/NET301/rec.flac"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/rec.flac\"|" "$N"
+  run lecture-forget --audio "$N" --yes
+  [ "$status" -eq 0 ]
+  [ ! -e "$LECTURE_ROOT/audio/NET301/rec.flac" ]
+  [ -f "$N" ]
+  grep -q '^audio: "deleted"' "$N"
+}
+
+@test "lecture-retention deletes only audio older than the limit" {
+  mkdir -p "$LECTURE_ROOT/transcripts/NET301" "$LECTURE_ROOT/audio/NET301"
+  OLD="$LECTURE_ROOT/transcripts/NET301/2025-01-10_old.md"; mknote "$OLD" NET301 en
+  NEW="$LECTURE_ROOT/transcripts/NET301/$(date +%F)_new.md"; mknote "$NEW" NET301 en
+  sed -i "s/^date: .*/date: 2025-01-10/" "$OLD"
+  sed -i "s/^date: .*/date: $(date +%F)/" "$NEW"
+  printf a > "$LECTURE_ROOT/audio/NET301/old.flac"; printf b > "$LECTURE_ROOT/audio/NET301/new.flac"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/old.flac\"|" "$OLD"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/new.flac\"|" "$NEW"
+  run lecture-retention --dry-run --days 30
+  [[ "$output" == *"would delete"*"old.flac"* ]]
+  [ -f "$LECTURE_ROOT/audio/NET301/old.flac" ]
+  export LECTURE_AUDIO_RETENTION_DAYS=30
+  run lecture-retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$LECTURE_ROOT/audio/NET301/old.flac" ]
+  [ -f "$LECTURE_ROOT/audio/NET301/new.flac" ]
+  grep -q 'audio: "deleted (retention 30d)"' "$OLD"
+  unset LECTURE_AUDIO_RETENTION_DAYS
+  run lecture-retention
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+@test "srtshift appends with an offset and renumbers" {
+  python3 -I "$REPO/lib/srtshift.py" "$REPO/tests/fixtures/sample.srt" --append "$BATS_TEST_TMPDIR/c.srt"
+  python3 -I "$REPO/lib/srtshift.py" "$REPO/tests/fixtures/sample.srt" --offset 300 --append "$BATS_TEST_TMPDIR/c.srt"
+  run cat "$BATS_TEST_TMPDIR/c.srt"
+  [[ "$output" == *$'\n5\n00:05:00,000 --> 00:05:03,500\nGood morning'* ]]
+  [[ "$output" == *$'\n8\n00:05:15,100 --> 00:05:19,900'* ]]
+}
+
+@test "live mode transcribes segments from RAM and keeps no audio" {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin" "$BATS_TEST_TMPDIR/models" "$BATS_TEST_TMPDIR/run"
+  printf x > "$BATS_TEST_TMPDIR/models/ggml-large-v3.bin"
+  # fake ffmpeg: writes two "segments", then waits for SIGINT like the real one
+  cat > "$BATS_TEST_TMPDIR/fakebin/ffmpeg" <<'SH'
+#!/usr/bin/env bash
+# convert call (-f s16le -i raw wav): write a fake wav. capture call: stream
+# 2.5 segments of 60 s x 32000 B raw PCM to stdout, then wait for TERM.
+if [[ "$*" == *"-i "*".raw"* ]]; then printf 'wav' > "${@: -1}"; exit 0; fi
+trap 'exit 0' TERM
+head -c $((60*32000)) /dev/zero; sleep 0.3
+head -c $((60*32000)) /dev/zero; sleep 0.3
+head -c $((30*32000)) /dev/zero
+while :; do sleep 0.2; done
+SH
+  cat > "$BATS_TEST_TMPDIR/fakebin/whisper-cli" <<'SH'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do [[ "$1" == -of ]] && OF="$2"; shift; done
+cp "$REPO_FIXTURES/sample.srt" "$OF.srt"; echo "Good morning everyone." > "$OF.txt"
+SH
+  cat > "$BATS_TEST_TMPDIR/fakebin/findmnt" <<'SH'
+#!/usr/bin/env bash
+echo tmpfs
+SH
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/"*
+  export REPO_FIXTURES="$REPO/tests/fixtures" WHISPER_MODELS="$BATS_TEST_TMPDIR/models" LECTURE_NOTES_ENGINE=off
+  export XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/run" LECTURE_LIVE_SEGMENT=60
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" lecture-record net301 "live check" > "$BATS_TEST_TMPDIR/live.out" 2>&1 &
+  pid=$!
+  sleep 2
+  kill -INT "$pid"
+  wait "$pid"; status=$?
+  pkill -f "$BATS_TEST_TMPDIR/fakebin/ffmpeg" 2>/dev/null || true
+  cat "$BATS_TEST_TMPDIR/live.out"
+  [ "$status" -eq 0 ]
+  M="$LECTURE_ROOT/transcripts/NET301/$(date +%F)_live-check.md"
+  [ -f "$M" ]
+  grep -q '^audio: "none (live, not recorded)"' "$M"
+  grep -q '00:02:00,000 -->' "${M%.md}.srt"          # third segment shifted by 2 x 60 s
+  [ ! -d "$LECTURE_ROOT/audio" ] || [ -z "$(ls -A "$LECTURE_ROOT/audio")" ]
+  [ -z "$(find "$XDG_RUNTIME_DIR" -name '*.wav' -o -name '*.raw')" ]
+  [ -z "$(find "$XDG_RUNTIME_DIR" -mindepth 2 -type d)" ]
+  grep -q "no audio kept" "$BATS_TEST_TMPDIR/live.out"
+}
+
+@test "record mode still writes a FLAC to the inbox" {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin"
+  cat > "$BATS_TEST_TMPDIR/fakebin/ffmpeg" <<'SH'
+#!/usr/bin/env bash
+printf 'x' > "${@: -1}"
+SH
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/ffmpeg"
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio net301 "kept"
+  [ "$status" -eq 0 ]
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_kept.flac" ]
+  export LECTURE_RECORD_MODE=record
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record net301 "kept"
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_kept-2.flac" ]
+}
+
+@test "lp_file_busy sees a file held open for writing" {
+  source "$REPO/lib/common.sh"
+  F="$BATS_TEST_TMPDIR/busy.flac"; : > "$F"
+  run lp_file_busy "$F"; [ "$status" -eq 1 ]
+  exec 7>>"$F"
+  run lp_file_busy "$F"; [ "$status" -eq 0 ]
+  exec 7>&-
+  run lp_file_busy "$F"; [ "$status" -eq 1 ]
 }

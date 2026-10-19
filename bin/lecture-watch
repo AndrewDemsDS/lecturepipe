@@ -19,9 +19,16 @@ shopt -s nullglob nocaseglob
 for f in "$INBOX"/*.{flac,wav,mp3,m4a,ogg,opus,mp4,mkv,webm,aac,wma}; do
   [[ -f "$f" ]] || continue
 
-  # Wait for the file to stop growing: someone may still be recording into it.
+  # Never touch a file someone is still writing: a recorder may be running into it
+  # (FLAC grows in bursts, so a stable size alone proves nothing). Wait as long as it
+  # takes; the unit has no timeout and lecture-record stops the watcher anyway.
+  while lp_file_busy "$f"; do
+    [[ -n "${waited:-}" ]] || { log "wait:  $(basename "$f") is still being written"; waited=1; }
+    sleep 30
+  done
+  unset waited
   prev=-1
-  for _ in {1..60}; do
+  for _ in {1..12}; do
     cur=$(stat -c %s "$f" 2>/dev/null || echo 0)
     [[ "$cur" == "$prev" && "$cur" -gt 0 ]] && break
     prev=$cur; sleep 5
@@ -36,3 +43,6 @@ for f in "$INBOX"/*.{flac,wav,mp3,m4a,ogg,opus,mp4,mkv,webm,aac,wma}; do
     mv -n "$f" "$INBOX/$(basename "$f").failed" 2>/dev/null
   fi
 done
+
+# Data minimisation: drop audio past the configured retention (no-op when unset).
+lecture-retention >>"$LOG" 2>&1 || true

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Erase a lecture completely: audio, transcript (.md .srt .txt .json), the
+# symlinks left in $LECTURE_ROOT, and the filed copies in the vault. Then the
+# index is rebuilt. This is the "right to erasure" command: if someone asks you
+# to delete a recording of them, this removes every derived artifact too.
+#
+#   lecture-forget <note.md | recording.flac> [--yes]
+#   lecture-forget --course CODE [--yes]       every lecture of one course
+#   lecture-forget --audio <note.md> [--yes]   audio only, keep transcript and notes
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+YES=0; COURSE=""; AUDIO_ONLY=0; TARGET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes|-y) YES=1; shift ;;
+    --course) COURSE="${2:-}"; shift 2 ;;
+    --audio)  AUDIO_ONLY=1; shift ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) TARGET="$1"; shift ;;
+  esac
+done
+[[ -n "$TARGET" || -n "$COURSE" ]] || { sed -n '2,10p' "$0"; exit 2; }
+
+declare -a FILES=()
+add() { local f; for f in "$@"; do [[ -e "$f" || -L "$f" ]] && FILES+=("$f"); done; return 0; }
+
+# Everything belonging to one note: the note, its siblings by stem, the audio, and
+# whatever the symlinks point at.
+collect_note() {
+  local note="$1" real stem dir audio ext
+  real="$(readlink -f "$note")"; stem="$(basename "$note" .md)"; dir="$(dirname "$note")"
+  audio="$(grep -m1 '^audio:' "$real" 2>/dev/null | sed -E 's/^audio:[[:space:]]*"?//; s/"?[[:space:]]*$//')"
+  if [[ "$AUDIO_ONLY" == 0 ]]; then
+    for ext in md srt txt json; do
+      add "$dir/$stem.$ext"
+      [[ -L "$dir/$stem.$ext" ]] && add "$(readlink -f "$dir/$stem.$ext")"
+    done
+    [[ "$real" != "$note" ]] && add "$real"
+  fi
+  if [[ -n "$audio" ]]; then
+    add "$audio"
+    [[ -L "$audio" ]] && add "$(readlink -f "$audio")"
+    # the symlink lecture-file leaves in $LECTURE_ROOT/audio/<COURSE>/
+    local course; course="$(grep -m1 '^course:' "$real" 2>/dev/null | awk '{print $2}')"
+    [[ -n "$course" ]] && add "$LECTURE_ROOT/audio/$course/$(basename "$audio")"
+  fi
+}
+
+if [[ -n "$COURSE" ]]; then
+  COURSE="$(printf '%s' "$COURSE" | tr '[:lower:]' '[:upper:]')"
+  shopt -s nullglob
+  for n in "$LECTURE_ROOT/transcripts/$COURSE"/*.md; do collect_note "$n"; done
+  for a in "$LECTURE_ROOT/audio/$COURSE"/*; do add "$a"; [[ -L "$a" ]] && add "$(readlink -f "$a")"; done
+  for a in "$LECTURE_ROOT/inbox/$COURSE"_*; do add "$a"; done
+  shopt -u nullglob
+elif [[ "$TARGET" == *.md ]]; then
+  [[ -e "$TARGET" ]] || { echo "no such note: $TARGET" >&2; exit 2; }
+  collect_note "$TARGET"
+else
+  # A recording: in the inbox (nothing derived yet) or an audio file with a note somewhere.
+  [[ -e "$TARGET" ]] || { echo "no such file: $TARGET" >&2; exit 2; }
+  add "$TARGET"; [[ -L "$TARGET" ]] && add "$(readlink -f "$TARGET")"
+  base="$(basename "$TARGET")"
+  if [[ "$AUDIO_ONLY" == 0 ]]; then
+    while IFS= read -r n; do collect_note "$n"; done < <(grep -rl --include='*.md' -m1 "^audio: .*/$base\"\?$" "$LECTURE_ROOT/transcripts" ${LECTURE_NOTES_ROOT:+"$LECTURE_NOTES_ROOT"} 2>/dev/null)
+  fi
+fi
+
+# unique, keep order
+declare -A seen=(); UNIQ=()
+for f in "${FILES[@]}"; do [[ -n "${seen[$f]+x}" ]] || { seen[$f]=1; UNIQ+=("$f"); }; done
+[[ ${#UNIQ[@]} -gt 0 ]] || { echo "nothing to delete"; exit 0; }
+
+echo "Will delete ${#UNIQ[@]} file(s):"
+for f in "${UNIQ[@]}"; do
+  if [[ -L "$f" ]]; then echo "  $f  -> (symlink)"; else echo "  $f  ($(du -h "$f" 2>/dev/null | cut -f1))"; fi
+done
+if [[ "$YES" == 0 ]]; then
+  read -r -p "Delete? [y/N] " a </dev/tty || a=""
+  [[ "${a,,}" == y* ]] || { echo "kept"; exit 1; }
+fi
+for f in "${UNIQ[@]}"; do rm -f -- "$f"; done
+# Audio-only erasure: record that in the note so the frontmatter does not point at nothing.
+if [[ "$AUDIO_ONLY" == 1 && "$TARGET" == *.md ]]; then
+  sed -i -E 's|^audio: .*|audio: "deleted"|' "$(readlink -f "$TARGET")"
+fi
+# drop now-empty course folders in the vault and the root
+find "$LECTURE_ROOT/transcripts" "$LECTURE_ROOT/audio" ${LECTURE_NOTES_ROOT:+"$LECTURE_NOTES_ROOT"} -mindepth 1 -type d -empty -delete 2>/dev/null
+lecture-index >/dev/null 2>&1 || true
+echo "✔ erased ${#UNIQ[@]} file(s)"

@@ -55,7 +55,7 @@ echo "${bold}lecturepipe setup${off}"
 echo "${dim}Config: $LECTUREPIPE_CONFIG${off}"
 
 # ---------------------------------------------------------------- 1. dependencies
-step "1/7  Dependencies"
+step "1/8  Dependencies"
 MISSING=()
 for c in ffmpeg ffprobe whisper-cli python3 flock; do
   if command -v "$c" >/dev/null 2>&1; then ok "$c"; else bad "$c missing"; MISSING+=("$c"); fi
@@ -71,7 +71,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------- 2. directories
-step "2/7  Directories"
+step "2/8  Directories"
 ask NEW_ROOT "Where should recordings and transcripts live?" "$LECTURE_ROOT"
 NEW_ROOT="${NEW_ROOT/#\~/$HOME}"
 mkdir -p "$NEW_ROOT"/{inbox,audio,transcripts,.state} && ok "$NEW_ROOT"
@@ -84,7 +84,21 @@ if [[ -n "$NEW_VAULT" ]]; then
 fi
 
 # ---------------------------------------------------------------- 3. models
-step "3/7  Whisper models"
+step "3/8  Recording and retention"
+echo "  ${dim}live:   transcribe during the lecture in RAM segments; no audio is ever written."
+echo "  record: save a FLAC and transcribe later; you keep a voice recording of other people.${off}"
+choose RM "How should lecture-record work?" "$([[ $LECTURE_RECORD_MODE == record ]] && echo 2 || echo 1)" \
+  "live (default, nothing but text is stored)" "record (keep the audio, opt in)"
+NEW_MODE="$([[ $RM == 2 ]] && echo record || echo live)"
+NEW_RET="$LECTURE_AUDIO_RETENTION_DAYS"
+if [[ "$NEW_MODE" == record ]]; then
+  echo "  ${dim}Recordings can expire on their own; transcript and notes stay. Empty keeps them forever.${off}"
+  ask NEW_RET "Delete audio after how many days?" "${LECTURE_AUDIO_RETENTION_DAYS:-90}"
+  [[ "$NEW_RET" =~ ^[0-9]*$ ]] || { warn "not a number, keeping audio"; NEW_RET=""; }
+fi
+echo "  ${dim}Whatever the mode, tell the people in the room. See docs/privacy.md.${off}"
+
+step "4/8  Whisper models"
 ask NEW_MODELS "Model directory" "$WHISPER_MODELS"
 NEW_MODELS="${NEW_MODELS/#\~/$HOME}"
 mkdir -p "$NEW_MODELS"
@@ -126,7 +140,7 @@ NEW_MODEL="$([[ $MC == 2 ]] && echo turbo || echo large)"
 [[ "$HAVE_LARGE$HAVE_TURBO" == 00 ]] && warn "no transcription model present; lecture-transcribe will refuse to run"
 
 # ---------------------------------------------------------------- 4. microphone
-step "4/7  Microphone"
+step "5/8  Microphone"
 NEW_MIC="$LECTURE_MIC"
 if command -v pactl >/dev/null 2>&1; then
   mapfile -t SRCS < <(pactl list sources short 2>/dev/null | awk '{print $2}')
@@ -151,7 +165,7 @@ if command -v pactl >/dev/null 2>&1; then
 else warn "pactl missing; set LECTURE_MIC by hand if the default input is wrong"; fi
 
 # ---------------------------------------------------------------- 5. notes engine
-step "5/7  Notes engine"
+step "6/8  Notes engine"
 echo "  ${dim}After transcription a prompt (transcript + slide text) is piped to a command that"
 echo "  prints Markdown. Anything works: a coding agent CLI, Ollama, llama.cpp, a curl to a server.${off}"
 opts=(); cmds=()
@@ -191,7 +205,7 @@ if [[ "$ASSUME" == 0 && "$NEW_ENGINE" == cmd && -n "$NEW_CMD" ]] && yesno "Send 
 fi
 
 # ---------------------------------------------------------------- 6. courses
-step "6/7  Courses"
+step "7/8  Courses"
 CONF="$NEW_ROOT/courses.conf"
 if [[ -f "$CONF" ]]; then
   n="$(grep -cvE '^\s*(#|$)' "$CONF")"
@@ -220,7 +234,7 @@ while [[ "$ADD" == 1 ]]; do
 done
 
 # ---------------------------------------------------------------- 7. write + watcher
-step "7/7  Save"
+step "8/8  Save"
 mkdir -p "$(dirname "$LECTUREPIPE_CONFIG")"
 [[ -f "$LECTUREPIPE_CONFIG" ]] && cp "$LECTUREPIPE_CONFIG" "$LECTUREPIPE_CONFIG.bak"
 q() { printf '%q' "$1"; }
@@ -231,6 +245,8 @@ q() { printf '%q' "$1"; }
   echo "LECTURE_NOTES_ROOT=$(q "$NEW_VAULT")"
   echo "WHISPER_MODELS=$(q "$NEW_MODELS")"
   echo "LECTURE_MODEL=$(q "$NEW_MODEL")"
+  echo "LECTURE_RECORD_MODE=$(q "$NEW_MODE")"
+  echo "LECTURE_AUDIO_RETENTION_DAYS=$(q "$NEW_RET")"
   echo "LECTURE_MIC=$(q "$NEW_MIC")"
   echo "LECTURE_NOTES_ENGINE=$(q "$NEW_ENGINE")"
   echo "LECTURE_NOTES_CMD=$(q "$NEW_CMD")"
@@ -249,7 +265,7 @@ fi
 
 echo
 echo "${bold}Done.${off} Next:"
-echo "  lecture-record ${bold}COURSE${off} \"topic\"      record (Ctrl-C to stop)"
+echo "  lecture-record ${bold}COURSE${off} \"topic\"      $([[ $NEW_MODE == live ]] && echo "live transcription, no audio kept" || echo "record") (Ctrl-C to stop)"
 echo "  cp recording.m4a $NEW_ROOT/inbox/COURSE_$(date +%F)_topic.m4a   or drop a file in"
 echo "  lecture-status                       see what is happening"
 echo "  $CONF    add glossaries: the biggest accuracy lever"

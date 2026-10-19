@@ -6,12 +6,21 @@ files the result next to your slides. The one optional step that can leave the m
 is the notes pass, and you choose what runs it.
 
 ```
-lecture-record NET301 "routing protocols"      Ctrl-C when the lecture ends
+lecture-record NET301 "routing protocols"          Ctrl-C when the lecture ends
           │
-          ▼
-    inbox/  ──►  systemd path unit  ──►  whisper.cpp  ──►  notes engine  ──►  vault/<course>/lectures/NN/
-                 (idle priority)         (large-v3)        (your choice)      .md .srt .txt .json .flac
+          ├─ live (default)  mic ──► 5 min segments in RAM ──► whisper.cpp ──► text; audio shredded
+          │
+          └─ --keep-audio    mic ──► inbox/*.flac ──► systemd path unit ──► whisper.cpp
+                                                        (idle priority)
+                                                                 │
+                                                                 ▼
+                                             notes engine (your choice) ──► vault/<course>/lectures/NN/
 ```
+
+By default no audio is ever written to disk: the microphone is transcribed in five minute
+segments held in memory, each shredded the moment its text exists. Keeping a recording is
+an explicit opt-in. See [docs/privacy.md](docs/privacy.md) for what is stored where and
+what that means under the GDPR.
 
 Built for Greek lectures full of English jargon on a laptop with an integrated AMD GPU,
 and used daily for a semester. Nothing in it is specific to that.
@@ -61,9 +70,19 @@ lecture-record NET301 "routing protocols"
 ```
 
 First word is the course code, second the topic. Put the laptop where it hears the
-lecturer, leave the terminal open, press Ctrl-C at the end. You will see `✔ saved`.
-Transcription starts on its own at idle priority, survives suspend, and does not fight you
-for the laptop.
+lecturer, leave the terminal open, press Ctrl-C at the end. In live mode the text scrolls
+by as each segment is transcribed, and at Ctrl-C the note, notes pass and filing run at
+once. The GPU works during the lecture, so expect some fan noise; `turbo` keeps it short.
+
+```sh
+lecture-record --keep-audio NET301 "routing protocols"
+```
+
+saves a FLAC to the inbox instead and transcribes afterwards at idle priority. You keep
+the audio to re-listen or re-transcribe, and you take on keeping it: set
+`LECTURE_AUDIO_RETENTION_DAYS` so it expires, and `lecture-forget` erases a lecture with
+everything derived from it. `LECTURE_RECORD_MODE="record"` in the config makes this the
+default.
 
 ```sh
 lecture-status            # recording? queued? transcribing? which engine? last 5 lectures
@@ -110,6 +129,26 @@ spelling, numbers and code.
 Notes are a separate pass. The transcript is never at risk, and you can redo the notes with
 another engine by deleting the `notes_status` line and running `lecture-notes` on the file.
 
+## Privacy
+
+Live mode keeps no audio. Record mode keeps a FLAC you can expire with a retention
+setting or erase with `lecture-forget`. Full data map and GDPR notes:
+[docs/privacy.md](docs/privacy.md).
+
+Recording, transcription, filing and indexing never open a network connection. The
+things that can:
+
+- **The notes pass**, when the engine you chose is a cloud service (Claude Code, Codex,
+  Gemini CLI, a hosted API). It receives the full transcript, the slide text, and the
+  outlines of sibling recordings. Ollama, llama.cpp and the built-in local engine keep it
+  on the machine. With a local model configured, `auto` prefers it over any cloud CLI;
+  when `auto` falls back to a cloud CLI, `lecture-notes` and `lecture-status` say so.
+- **`lecture-setup`**, when you accept a model download (Hugging Face) or the one-line
+  engine test ("Reply with OK").
+
+Audio, transcripts and `courses.conf` stay under `~/lectures` and your vault. Lecturer
+names and course codes in `courses.conf` are yours alone; the repo ships an example.
+
 ## Filing into a notes vault
 
 With a vault configured, a finished lecture moves to
@@ -124,7 +163,10 @@ the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extr
 | Command | Does |
 |---|---|
 | `lecture-setup` | Configuration wizard. `--defaults` for scripts. |
-| `lecture-record COURSE ["topic"]` | Record into the inbox. Ctrl-C to stop. |
+| `lecture-record COURSE ["topic"]` | Live transcription, no audio kept. Ctrl-C to stop. |
+| `lecture-record --keep-audio COURSE ["topic"]` | Record a FLAC into the inbox for later. |
+| `lecture-forget NOTE.md \| --course CODE [--audio]` | Erase a lecture and everything derived from it. |
+| `lecture-retention [--dry-run]` | Delete audio older than `LECTURE_AUDIO_RETENTION_DAYS`. |
 | `lecture-transcribe FILE [-m turbo] [--no-notes]` | Process one file by hand. |
 | `lecture-notes NOTE.md [slides.pdf ...]` | Run or redo the notes pass. |
 | `lecture-watch` | Drain the inbox now. |
@@ -138,10 +180,12 @@ Watcher: `systemctl --user status lecture-watch.path`, log in `~/lectures/.state
 
 ## Design notes, measured
 
-- **Batch, not live.** Streaming forces a small model and short context and cannot revise a
-  word once emitted, which is exactly what hurts when a sentence mixes two languages.
-  `large-v3` after the fact ran at 2.4x realtime on a Radeon 780M over Vulkan, `turbo` at
-  7.5x. A two hour lecture is 50 minutes of background work you do not notice.
+- **Segments, not streaming.** Word-by-word streaming forces a small model and a short
+  context and cannot revise a word once emitted, which is exactly what hurts when a
+  sentence mixes two languages. Live mode instead runs the full `large-v3` on five minute
+  segments, so quality matches a batch run except at the segment edges. `large-v3` ran at
+  2.4x realtime on a Radeon 780M over Vulkan, `turbo` at 7.5x: a segment is done well
+  before the next one closes.
 - **`-mc 0` is load-bearing.** Whisper conditions each window on its own previous output, so
   one repeated sentence can reinforce itself into an endless loop. That cost an hour of a real
   lecture once. `srt2md.py` also measures repetition and stamps `repetition_warning:` in the
@@ -182,9 +226,9 @@ tests/run.sh      # shellcheck, py_compile, bats
 
 ## AI assistance
 
-This project was developed with AI assistance (Claude Code), working from a pipeline the
-author had built and used for a semester, and from measurements on the reference laptop.
-The scripts, prompts and this README were reviewed and the pipeline was run end to end on a
+This project was developed with AI assistance, working from a pipeline the author had
+built and used for a semester, and from measurements on the reference laptop. The
+scripts, prompts and this README were reviewed and the pipeline was run end to end on a
 real recording before publishing.
 
 ## License

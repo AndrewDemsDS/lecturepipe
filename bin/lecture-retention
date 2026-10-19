@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Delete lecture audio older than LECTURE_AUDIO_RETENTION_DAYS. Transcripts and
+# notes are kept; the note's frontmatter is updated to say the audio is gone.
+# Runs at the end of every lecture-watch pass, and by hand:
+#
+#   lecture-retention            apply the configured retention
+#   lecture-retention --dry-run  list only
+#   lecture-retention --days 30  one-off with another limit
+#
+# Unset or empty LECTURE_AUDIO_RETENTION_DAYS means keep audio forever.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+DAYS="${LECTURE_AUDIO_RETENTION_DAYS:-}"; DRY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --days) DAYS="${2:-}"; shift 2 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "$DAYS" =~ ^[0-9]+$ ]] || { [[ -z "$DAYS" ]] && exit 0; echo "retention days must be a number: $DAYS" >&2; exit 2; }
+
+n=0
+# Every note knows where its audio is; go through the notes rather than guessing paths.
+while IFS= read -r note; do
+  real="$(readlink -f "$note")"
+  audio="$(grep -m1 '^audio:' "$real" 2>/dev/null | sed -E 's/^audio:[[:space:]]*"?//; s/"?[[:space:]]*$//')"
+  [[ -n "$audio" && "$audio" != deleted* ]] || continue
+  target="$(readlink -f "$audio" 2>/dev/null || true)"
+  [[ -n "$target" && -f "$target" ]] || continue
+  # age from the lecture date in the note, falling back to the file mtime
+  date_s="$(grep -m1 '^date:' "$real" | awk '{print $2}')"
+  age_days=$(( ( $(date +%s) - $(date -d "${date_s:-@$(stat -c %Y "$target")}" +%s 2>/dev/null || stat -c %Y "$target") ) / 86400 ))
+  [[ "$age_days" -gt "$DAYS" ]] || continue
+  n=$((n+1))
+  if [[ "$DRY" == 1 ]]; then
+    echo "would delete ($age_days d): $target"
+  else
+    rm -f -- "$target" "$audio"
+    course="$(grep -m1 '^course:' "$real" | awk '{print $2}')"
+    rm -f -- "$LECTURE_ROOT/audio/$course/$(basename "$audio")"
+    sed -i -E "s|^audio: .*|audio: \"deleted (retention ${DAYS}d)\"|" "$real"
+    echo "deleted ($age_days d): $target"
+  fi
+done < <(find -L "$LECTURE_ROOT/transcripts" -name '*.md' 2>/dev/null)
+[[ "$n" -gt 0 ]] && echo "$([[ $DRY == 1 ]] && echo "would remove" || echo "removed") $n audio file(s) older than $DAYS days"
+exit 0

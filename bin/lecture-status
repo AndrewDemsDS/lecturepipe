@@ -45,7 +45,7 @@ fi
 echo "${bold}Notes engine${off}"
 eng="$(lp_resolve_notes_engine)"
 case "$eng" in
-  cmd)   echo "  ${grn}$LECTURE_NOTES_CMD${off}" ;;
+  cmd)   echo "  ${grn}$LECTURE_NOTES_CMD${off}${LP_AUTO_CLOUD:+ ${ylw}(auto-detected, sends transcripts to that service)${off}}" ;;
   local) echo "  ${grn}local${off} ${dim}($LECTURE_LLM)${off}" ;;
   *)     echo "  ${ylw}off${off} ${dim}(transcripts only; run lecture-setup to pick one)${off}" ;;
 esac

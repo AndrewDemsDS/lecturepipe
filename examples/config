@@ -16,6 +16,17 @@ WHISPER_MODELS="$HOME/.local/share/whisper-models"
 # Default model: large (accurate) or turbo (about 3x faster).
 LECTURE_MODEL="large"
 
+# How lecture-record works.
+#   live    transcribe during the lecture, segment by segment, in RAM. No audio file
+#           is ever written. This is the default: nobody's voice is kept.
+#   record  save a FLAC to the inbox and transcribe afterwards. You keep a recording
+#           you can re-listen to or re-transcribe; see docs/privacy.md before choosing.
+LECTURE_RECORD_MODE="live"
+
+# Live mode: seconds of audio per segment. Shorter means less audio in memory and
+# earlier text on screen; longer gives Whisper more context. 120 to 600 is sensible.
+LECTURE_LIVE_SEGMENT=300
+
 # PipeWire/PulseAudio source for lecture-record. Empty picks the system default.
 # List them with: pactl list sources short
 LECTURE_MIC=""
@@ -37,6 +48,11 @@ LECTURE_LLM=""
 
 # Threads for whisper-cli. Defaults to nproc.
 #LECTURE_THREADS=8
+
+# Delete the audio N days after the lecture; transcript and notes stay. Empty keeps it.
+# The people in a recording have a stronger claim on their voice than you have on
+# re-listening; pick a number you can justify (see docs/privacy.md).
+LECTURE_AUDIO_RETENTION_DAYS=""
 
 # lecture-quiet (AMD only): the DRM card whose clocks to cap, e.g. /sys/class/drm/card1/device
 LECTURE_GPU_CARD=""
