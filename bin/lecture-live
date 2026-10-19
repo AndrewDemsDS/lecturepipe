@@ -66,7 +66,7 @@ FFPID=""; STOP_SENT=0
 stop_ffmpeg() {
   [[ -n "$FFPID" && "$STOP_SENT" == 0 ]] || return 0
   STOP_SENT=1
-  local pid; pid="$(pgrep -P "$FFPID" -x ffmpeg | head -1)"
+  local pid; pid="$(pgrep -P "$FFPID" -f -- "-f pulse" | head -1)"
   [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null
 }
 cleanup() {

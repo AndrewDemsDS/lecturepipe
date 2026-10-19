@@ -11,7 +11,9 @@ setup() {
   # Never touch the real user systemd from a test: systemctl ignores HOME.
   mkdir -p "$BATS_TEST_TMPDIR/stubs"
   printf '#!/usr/bin/env bash\n[[ "$*" == *is-active* ]] && exit 3\nexit 0\n' > "$BATS_TEST_TMPDIR/stubs/systemctl"
-  chmod +x "$BATS_TEST_TMPDIR/stubs/systemctl"
+  # Tests must not see a real recording on this machine: hide only that pgrep pattern.
+  printf '#!/usr/bin/env bash\n[[ "$*" == *"ffmpeg.*-f pulse"* ]] && exit 1\nexec /usr/bin/pgrep "$@"\n' > "$BATS_TEST_TMPDIR/stubs/pgrep"
+  chmod +x "$BATS_TEST_TMPDIR/stubs/systemctl" "$BATS_TEST_TMPDIR/stubs/pgrep"
   export PATH="$BATS_TEST_TMPDIR/stubs:$REPO/bin:$PATH"
   unset LECTURE_NOTES_ROOT LECTURE_NOTES_CMD LECTURE_NOTES_ENGINE LECTURE_LLM LECTURE_RECORD_MODE
 }
@@ -354,7 +356,9 @@ SH
   PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" lecture-record net301 "live check" > "$BATS_TEST_TMPDIR/live.out" 2>&1 &
   pid=$!
   sleep 2
-  kill -INT "$pid"
+  # A job started with & in a non-interactive shell has SIGINT ignored, and bash
+  # cannot trap a signal ignored on entry. Ctrl-C in a terminal works. Here the test uses TERM.
+  kill -TERM "$pid"
   wait "$pid"; status=$?
   pkill -f "$BATS_TEST_TMPDIR/fakebin/ffmpeg" 2>/dev/null || true
   cat "$BATS_TEST_TMPDIR/live.out"
@@ -392,4 +396,22 @@ SH
   run lp_file_busy "$F"; [ "$status" -eq 0 ]
   exec 7>&-
   run lp_file_busy "$F"; [ "$status" -eq 1 ]
+}
+
+@test "lecture-pending finds pending notes in the vault and runs the engine" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  D="$LECTURE_NOTES_ROOT/networks_net301/lectures/07"; mkdir -p "$D" "$LECTURE_ROOT/transcripts"
+  P="$D/2026-10-19_from-phone.md"; mknote "$P" NET301 en
+  S="$D/2026-10-12_short.md"; mknote "$S" NET301 en 50
+  run lecture-pending --list
+  [[ "$output" == *"from-phone.md"* ]]
+  [[ "$output" != *"short.md"* ]]
+  [[ "$output" == *"1 pending"* ]]
+  export LECTURE_NOTES_CMD="printf '## Notes\n\n- phone lecture\n'"
+  run lecture-pending
+  [ "$status" -eq 0 ]
+  grep -q "notes_status: done (cmd)" "$P"
+  grep -q "phone lecture" "$P"
+  run lecture-pending --list
+  [[ "$output" == *"0 pending"* ]]
 }

@@ -1,0 +1,9 @@
+[Unit]
+Description=Notes pass for pending lecture transcripts in the vault
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lecture-pending
+Nice=10
+IOSchedulingClass=idle
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

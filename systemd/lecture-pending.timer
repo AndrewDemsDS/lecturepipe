@@ -1,0 +1,10 @@
+[Unit]
+Description=Give notes to lecture transcripts that arrived from another device
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

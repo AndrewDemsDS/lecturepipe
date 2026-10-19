@@ -18,11 +18,11 @@ for f in "$HERE"/bin/lecture-*; do
   ln -sfn "$f" "$BIN/$(basename "$f")"
 done
 echo "✔ commands linked into $BIN"
-for u in lecture-watch.path lecture-watch.service; do
+for u in lecture-watch.path lecture-watch.service lecture-pending.timer lecture-pending.service; do
   install -m 644 "$HERE/systemd/$u" "$UNITS/$u"
 done
 # The service finds lecture-watch through PATH; make sure $BIN is on it.
-sed -i "s|^Environment=PATH=.*|Environment=PATH=$BIN:/usr/local/bin:/usr/bin:/bin|" "$UNITS/lecture-watch.service"
+sed -i "s|^Environment=PATH=.*|Environment=PATH=$BIN:/usr/local/bin:/usr/bin:/bin|" "$UNITS/lecture-watch.service" "$UNITS/lecture-pending.service"
 echo "✔ systemd user units installed (not armed yet)"
 
 case ":$PATH:" in

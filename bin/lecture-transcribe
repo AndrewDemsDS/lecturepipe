@@ -86,7 +86,8 @@ NAME="${DATE}_${SLUG}"
 
 OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"
 AUDIODIR="$LECTURE_ROOT/audio/$COURSE"
-mkdir -p "$OUTDIR" "$AUDIODIR"
+mkdir -p "$OUTDIR"
+[[ -n "$FROM_SRT" ]] || mkdir -p "$AUDIODIR"   # live mode keeps no audio, so no audio folder
 
 if [[ -n "$FROM_SRT" ]]; then
   # Live mode: whisper already ran segment by segment, no audio exists.

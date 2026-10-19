@@ -170,6 +170,7 @@ the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extr
 | `lecture-transcribe FILE [-m turbo] [--no-notes]` | Process one file by hand. |
 | `lecture-notes NOTE.md [slides.pdf ...]` | Run or redo the notes pass. |
 | `lecture-watch` | Drain the inbox now. |
+| `lecture-pending [--list]` | Notes for transcripts that arrived without them (phone app, failed runs). Also runs every 15 min from a timer. |
 | `lecture-file NOTE.md [NN]` | File into the vault by hand, or fix a lecture number. |
 | `lecture-index` | Rebuild `INDEX.md`. |
 | `lecture-status` | What is happening. |
