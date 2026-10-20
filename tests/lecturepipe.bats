@@ -11,8 +11,8 @@ setup() {
   # Never touch the real user systemd from a test: systemctl ignores HOME.
   mkdir -p "$BATS_TEST_TMPDIR/stubs"
   printf '#!/usr/bin/env bash\n[[ "$*" == *is-active* ]] && exit 3\nexit 0\n' > "$BATS_TEST_TMPDIR/stubs/systemctl"
-  # Tests must not see a real recording on this machine: hide only that pgrep pattern.
-  printf '#!/usr/bin/env bash\n[[ "$*" == *"ffmpeg.*-f pulse"* ]] && exit 1\nexec /usr/bin/pgrep "$@"\n' > "$BATS_TEST_TMPDIR/stubs/pgrep"
+  # Tests must not see a real recording on this machine: hide only the recorder lookup.
+  printf '#!/usr/bin/env bash\n[[ "$*" == *"-x ffmpeg"* ]] && exit 1\nexec /usr/bin/pgrep "$@"\n' > "$BATS_TEST_TMPDIR/stubs/pgrep"
   chmod +x "$BATS_TEST_TMPDIR/stubs/systemctl" "$BATS_TEST_TMPDIR/stubs/pgrep"
   export PATH="$BATS_TEST_TMPDIR/stubs:$REPO/bin:$PATH"
   unset LECTURE_NOTES_ROOT LECTURE_NOTES_CMD LECTURE_NOTES_ENGINE LECTURE_LLM LECTURE_RECORD_MODE
@@ -414,4 +414,15 @@ SH
   grep -q "phone lecture" "$P"
   run lecture-pending --list
   [[ "$output" == *"0 pending"* ]]
+}
+
+
+@test "a shell that merely mentions the recorder pattern is not a recording" {
+  bash -c 'sleep 5 # ffmpeg -f pulse' &
+  decoy=$!
+  PATH="${PATH#"$BATS_TEST_TMPDIR/stubs:"}"   # use the real pgrep here
+  source "$REPO/lib/common.sh"
+  run lp_recording_running
+  kill "$decoy" 2>/dev/null
+  [ "$status" -ne 0 ] || [ -n "$(pgrep -a -x ffmpeg | grep -- '-f pulse')" ]   # unless a real recorder runs
 }

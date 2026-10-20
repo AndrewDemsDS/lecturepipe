@@ -10,7 +10,7 @@ bold=$'\e[1m'; dim=$'\e[2m'; grn=$'\e[32m'; ylw=$'\e[33m'; red=$'\e[31m'; off=$'
 
 echo "${bold}Recording${off}"
 if lp_recording_running; then
-  f=$(pgrep -af "ffmpeg.*-f pulse" | grep -oE '[^ ]+\.flac' | head -1)
+  f=$(lp_recorder_args | grep -oE '[^ ]+\.flac' | head -1)
   echo "  ${grn}● in progress${off} → $(basename "${f:-?}")   ${dim}(Ctrl-C in that terminal to stop)${off}"
 else
   echo "  ${dim}idle${off}"

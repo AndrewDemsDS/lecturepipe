@@ -100,7 +100,11 @@ lp_file_busy() {
   return 1
 }
 
-lp_recording_running() { pgrep -f "ffmpeg.*-f pulse" >/dev/null 2>&1; }
+# A recording is an ffmpeg process capturing from PulseAudio/PipeWire. Match the
+# process name first: `pgrep -f` alone also matches any shell whose command line
+# merely contains the pattern (a terminal running `pgrep ...`, an editor, a script).
+lp_recorder_args() { pgrep -a -x ffmpeg 2>/dev/null | grep -- '-f pulse'; }
+lp_recording_running() { [[ -n "$(lp_recorder_args)" ]]; }
 
 # Which notes engine would run right now: cmd, local or off. Sets LECTURE_NOTES_CMD
 # when a CLI is auto-detected.
