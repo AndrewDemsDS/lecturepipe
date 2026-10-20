@@ -39,6 +39,12 @@ command -v ffmpeg >/dev/null 2>&1 || { echo "✖ ffmpeg not found" >&2; exit 1; 
 # whatever you record next. Back-to-back lectures make that a real scenario, so
 # hold the queue until the recording stops.
 WATCHER_WAS_ACTIVE=0
+# A transcription already running would keep the fans up too: stop it. Its file
+# stays in the inbox until a run succeeds, so it simply reruns afterwards.
+if systemctl --user is-active --quiet lecture-watch.service 2>/dev/null; then
+  systemctl --user stop lecture-watch.service 2>/dev/null || true
+  echo "  (paused a transcription in progress; it reruns when you stop)"
+fi
 if systemctl --user is-active --quiet lecture-watch.path 2>/dev/null; then
   WATCHER_WAS_ACTIVE=1
   systemctl --user stop lecture-watch.path 2>/dev/null || true
