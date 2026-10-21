@@ -16,13 +16,34 @@ case "${1:-}" in --list) LIST=1 ;; -h|--help) sed -n '2,8p' "$0"; exit 0 ;; esac
 roots=("$LECTURE_ROOT/transcripts")
 [[ -n "$LECTURE_NOTES_ROOT" && -d "$LECTURE_NOTES_ROOT" ]] && roots+=("$LECTURE_NOTES_ROOT")
 # Recordings the phone app uploaded to the vault: hand them to the inbox watcher once they
-# have stopped changing. Skip the temporary names sync clients use (hidden, ~ prefix, .part and so on:
-# only complete *.wav/*.flac/*.m4a names are taken, as Nextcloud's own ignore list does).
+# have stopped changing. Only complete *.wav/*.flac/*.m4a names are taken, never hidden, ~ prefixed
+# or .part names (the temporary names sync clients use, as in Nextcloud's own ignore list).
+# The file is first moved to a dot name in the inbox (invisible to lecture-watch's globs) and then
+# renamed within the same directory, so the watcher never sees a half-copied file.
+phone_taken() {  # phone_taken stem: is this stem already in the inbox, the audio archive or the transcripts?
+  local stem="$1" course="" rest="" c
+  c="$(compgen -G "$LECTURE_ROOT/inbox/$stem.*" || true)"; [[ -z "$c" ]] || return 0
+  if [[ "$stem" == *_* ]]; then
+    course="$(printf '%s' "${stem%%_*}" | tr '[:lower:]' '[:upper:]')"; rest="${stem#*_}"
+    c="$(compgen -G "$LECTURE_ROOT/audio/$course/$stem.*" || true)"; [[ -z "$c" ]] || return 0
+    [[ ! -e "$LECTURE_ROOT/transcripts/$course/$rest.md" ]] || return 0
+  fi
+  return 1
+}
 PHONE_INBOX="${LECTURE_NOTES_ROOT:+$LECTURE_NOTES_ROOT/.lecturepipe-inbox}"
 if [[ -n "$PHONE_INBOX" && -d "$PHONE_INBOX" && "$LIST" == 0 ]]; then
   mkdir -p "$LECTURE_ROOT/inbox"
-  find "$PHONE_INBOX" -maxdepth 1 -type f \( -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' \) ! -name '.*' ! -name '~*' -mmin +2 -print0 |
-    while IFS= read -r -d '' f; do mv -n "$f" "$LECTURE_ROOT/inbox/" && echo "phone recording queued: $(basename "$f")"; done
+  find "$LECTURE_ROOT/inbox" -maxdepth 1 -type f -name '.incoming-*' -mmin +60 -delete 2>/dev/null
+  while IFS= read -r -d '' f; do
+    base="$(basename "$f")"; ext="${base##*.}"; stem="${base%.*}"; name="$base"; n=1
+    while phone_taken "${name%.*}"; do n=$((n+1)); name="$stem-$n.$ext"; done
+    tmp="$LECTURE_ROOT/inbox/.incoming-$name"
+    if mv -n "$f" "$tmp" && [[ ! -e "$f" ]] && mv -n "$tmp" "$LECTURE_ROOT/inbox/$name" && [[ ! -e "$tmp" ]]; then
+      echo "phone recording queued: $name"
+    else
+      echo "phone recording NOT moved (left in the vault inbox): $base"
+    fi
+  done < <(find "$PHONE_INBOX" -maxdepth 1 -type f \( -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' \) ! -name '.*' ! -name '~*' -mmin +2 -print0)
 fi
 # Nothing while a recording is in progress: the GPU would put fan noise into it.
 [[ "$LIST" == 1 ]] || ! lp_recording_running || { echo "recording in progress, try later"; exit 0; }

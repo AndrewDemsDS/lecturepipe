@@ -590,19 +590,43 @@ SH
   export LECTURE_NOTES_ROOT="$BATS_TEST_TMPDIR/vault"
   inbox="$LECTURE_NOTES_ROOT/.lecturepipe-inbox"
   mkdir -p "$inbox"
-  : > "$inbox/NET301_2026-10-20_routing.wav"
-  : > "$inbox/NET301_2026-10-20_old.wav.part"
-  : > "$inbox/NET301_2026-10-21_fresh.wav"
-  : > "$inbox/.~NET301_tmp.wav"
-  touch -d '10 minutes ago' "$inbox/.~NET301_tmp.wav"
-  touch -d '10 minutes ago' "$inbox/NET301_2026-10-20_routing.wav" "$inbox/NET301_2026-10-20_old.wav.part"
+  : > "$inbox/CS101_2026-10-20_routing.wav"
+  : > "$inbox/CS101_2026-10-20_old.wav.part"
+  : > "$inbox/CS101_2026-10-21_fresh.wav"
+  : > "$inbox/CS101_2026-10-20_two words.wav"
+  touch -d '10 minutes ago' "$inbox/CS101_2026-10-20_two words.wav"
+  : > "$inbox/.~CS101_tmp.wav"
+  touch -d '10 minutes ago' "$inbox/.~CS101_tmp.wav"
+  touch -d '10 minutes ago' "$inbox/CS101_2026-10-20_routing.wav" "$inbox/CS101_2026-10-20_old.wav.part"
   run lecture-pending
   [ "$status" -eq 0 ]
-  [[ "$output" == *"phone recording queued: NET301_2026-10-20_routing.wav"* ]]
-  [ -f "$LECTURE_ROOT/inbox/NET301_2026-10-20_routing.wav" ]
-  [ ! -e "$inbox/NET301_2026-10-20_routing.wav" ]
-  [ -f "$inbox/NET301_2026-10-20_old.wav.part" ]
-  [ -f "$inbox/NET301_2026-10-21_fresh.wav" ]
-  [ ! -e "$LECTURE_ROOT/inbox/NET301_2026-10-21_fresh.wav" ]
-  [ -f "$inbox/.~NET301_tmp.wav" ]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_routing.wav"* ]]
+  [ -f "$LECTURE_ROOT/inbox/CS101_2026-10-20_routing.wav" ]
+  [ ! -e "$inbox/CS101_2026-10-20_routing.wav" ]
+  [ -f "$inbox/CS101_2026-10-20_old.wav.part" ]
+  [ -f "$inbox/CS101_2026-10-21_fresh.wav" ]
+  [ ! -e "$LECTURE_ROOT/inbox/CS101_2026-10-21_fresh.wav" ]
+  [ -f "$inbox/.~CS101_tmp.wav" ]
+  [ -f "$LECTURE_ROOT/inbox/CS101_2026-10-20_two words.wav" ]
+  [ -z "$(ls -A "$LECTURE_ROOT/inbox" | grep '^\.incoming-')" ]
+}
+
+@test "lecture-pending numbers a phone recording whose name is already taken" {
+  export LECTURE_NOTES_ROOT="$BATS_TEST_TMPDIR/vault"
+  inbox="$LECTURE_NOTES_ROOT/.lecturepipe-inbox"
+  mkdir -p "$inbox" "$LECTURE_ROOT/inbox" "$LECTURE_ROOT/audio/CS101"
+  echo new > "$inbox/CS101_2026-10-20_a.wav"; echo new > "$inbox/CS101_2026-10-20_b.wav"
+  touch -d '10 minutes ago' "$inbox/CS101_2026-10-20_a.wav" "$inbox/CS101_2026-10-20_b.wav"
+  echo old > "$LECTURE_ROOT/inbox/CS101_2026-10-20_a.wav"
+  echo old > "$LECTURE_ROOT/audio/CS101/CS101_2026-10-20_b.wav"
+  # a stale half-moved file is cleaned up
+  : > "$LECTURE_ROOT/inbox/.incoming-stale.wav"; touch -d '3 hours ago' "$LECTURE_ROOT/inbox/.incoming-stale.wav"
+  run lecture-pending
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_a-2.wav"* ]]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_b-2.wav"* ]]
+  [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_a.wav")" = old ]
+  [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_a-2.wav")" = new ]
+  [ "$(cat "$LECTURE_ROOT/audio/CS101/CS101_2026-10-20_b.wav")" = old ]
+  [ ! -e "$LECTURE_ROOT/inbox/.incoming-stale.wav" ]
 }
