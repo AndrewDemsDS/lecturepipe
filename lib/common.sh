@@ -75,33 +75,51 @@ lp_course_lookup() {
 # --carry-initial-prompt the glossary keeps min(tokens, mc - 1) tokens and the
 # rolling decoded text gets what is left, so mc = tokens + 1 carries the whole
 # glossary and leaves zero rolling context (see the -mc note in lecture-transcribe).
-# Whisper caps the prompt at 224 tokens (half its text context).
-# There is no tokenizer binary, so a 1 s silent probe with -mc 2 makes whisper-cli
+# Whisper caps the context at 224 tokens (half its text context), so the
+# glossary cap is 223 and Whisper keeps the end of a longer one.
+# There is no tokenizer binary, so a 2 s silent probe with -mc 2 makes whisper-cli
 # report the count in its "initial prompt is too long (N tokens)" warning.
 # Cached per model and glossary. Prints 0 (the old, glossary-less behaviour) when
-# the count cannot be read.
+# the count cannot be read, and caches nothing then.
+_lp_prompt_ctx_key() {
+  printf '%s\n%s' "$(basename "$2")" "$1" | sha256sum | cut -c1-32
+}
+
+# lp_prompt_ctx_cached GLOSSARY MODEL -> the cached value, or status 1 when the
+# probe would have to run. An empty glossary is always "cached" as 0.
+lp_prompt_ctx_cached() {
+  [[ -n "$1" ]] || { echo 0; return 0; }
+  local hit
+  hit="$(awk -v k="$(_lp_prompt_ctx_key "$1" "$2")" '$1 == k { print $2; exit }' \
+    "$LECTURE_ROOT/.state/prompt-ctx.cache" 2>/dev/null || true)"
+  [[ "$hit" =~ ^[0-9]+$ ]] || return 1
+  echo "$hit"
+}
+
 lp_prompt_ctx() {
-  local glossary="$1" model="$2" cache key hit wav out n
-  [[ -n "$glossary" ]] || { echo 0; return 0; }
+  local glossary="$1" model="$2" cache tmp out n
+  lp_prompt_ctx_cached "$glossary" "$model" && return 0
   cache="$LECTURE_ROOT/.state/prompt-ctx.cache"
-  key="$(printf '%s\n%s' "$(basename "$model")" "$glossary" | sha256sum | cut -c1-32)"
-  hit="$(awk -v k="$key" '$1 == k { print $2; exit }' "$cache" 2>/dev/null || true)"
-  [[ "$hit" =~ ^[0-9]+$ ]] && { echo "$hit"; return 0; }
-  wav="$(mktemp --suffix=.wav)"
-  python3 -I -c 'import sys, wave
+  tmp="$(mktemp -d)" || { echo "  ! could not count the glossary tokens, transcribing without the glossary" >&2; echo 0; return 0; }
+  # No -np: it would also silence the warning. whisper.cpp rejects input under
+  # 1000 ms, so the probe is 2 s. A hung probe must not hold up a lecture.
+  if python3 -I -c 'import sys, wave
 w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-w.writeframes(bytes(32000)); w.close()' "$wav"
-  # No -np: it would also silence the warning.
-  out="$(whisper-cli -m "$model" -f "$wav" -l en --prompt "$glossary" --carry-initial-prompt -mc 2 2>&1 || true)"
-  rm -f "$wav"
-  n="$(printf '%s\n' "$out" | grep -oE 'initial prompt is too long \([0-9]+ tokens\)' | grep -oE '[0-9]+' | head -1 || true)"
+w.writeframes(bytes(64000)); w.close()' "$tmp/silence.wav" 2>/dev/null \
+    && out="$(timeout 120 whisper-cli -m "$model" -f "$tmp/silence.wav" -l en \
+      --prompt "$glossary" --carry-initial-prompt -mc 2 2>&1)"; then
+    n="$(printf '%s\n' "$out" | grep -oE 'initial prompt is too long \([0-9]+ tokens\)' | grep -oE '[0-9]+' | head -1 || true)"
+  else
+    n=""
+  fi
+  rm -rf "$tmp"
   if [[ ! "$n" =~ ^[0-9]+$ ]]; then
     echo "  ! could not count the glossary tokens, transcribing without the glossary" >&2
     echo 0; return 0
   fi
   n=$(( n + 1 )); (( n > 224 )) && n=224
   mkdir -p "${cache%/*}"
-  printf '%s %s\n' "$key" "$n" >> "$cache"
+  printf '%s %s\n' "$(_lp_prompt_ctx_key "$glossary" "$model")" "$n" >> "$cache"
   echo "$n"
 }
 

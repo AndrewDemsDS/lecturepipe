@@ -427,9 +427,11 @@ SH
   [ "$status" -ne 0 ] || [ -n "$(pgrep -a -x ffmpeg | grep -- '-f pulse')" ]   # unless a real recorder runs
 }
 
+
 # A fake whisper-cli that answers the token-count probe the way whisper.cpp 1.9 does:
 # with -mc 2 and --carry-initial-prompt the static prompt keeps 1 token and the
-# warning names the real count. FAKE_TOKENS sets that count, -1 prints no warning.
+# warning names the real count. FAKE_TOKENS sets that count, -1 prints no warning,
+# FAKE_EXIT sets the probe's exit status. The probe's --prompt is saved verbatim.
 fake_whisper_probe() {
   mkdir -p "$BATS_TEST_TMPDIR/fakebin"
   cat > "$BATS_TEST_TMPDIR/fakebin/whisper-cli" <<'SH'
@@ -438,8 +440,13 @@ echo "$*" >> "$BATS_TEST_TMPDIR/whisper.calls"
 args=" $* "
 if [[ "$args" == *" -mc 2 "* ]]; then
   [[ "$args" == *" --carry-initial-prompt "* && "$args" != *" -np "* ]] || exit 0
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --prompt ]] && printf '%s' "$2" > "$BATS_TEST_TMPDIR/whisper.prompt"
+    [[ "$1" == -f ]] && [[ $(stat -c %s "$2") -ge 64044 ]] && : > "$BATS_TEST_TMPDIR/whisper.wav2s"
+    shift
+  done
   [[ "${FAKE_TOKENS:-37}" -ge 0 ]] && echo "whisper_full_with_state: initial prompt is too long (${FAKE_TOKENS:-37} tokens), will use only the last 1 tokens" >&2
-  exit 0
+  exit "${FAKE_EXIT:-0}"
 fi
 OF=""; while [[ $# -gt 0 ]]; do [[ "$1" == -of ]] && OF="$2"; shift; done
 [[ -n "$OF" ]] || exit 0
@@ -447,16 +454,23 @@ cp "$REPO_FIXTURES/sample.srt" "$OF.srt"; echo "Good morning everyone." > "$OF.t
 SH
   chmod +x "$BATS_TEST_TMPDIR/fakebin/whisper-cli"
   export REPO_FIXTURES="$REPO/tests/fixtures"
+  # The probe's scratch files must not outlive it: give it a TMPDIR the tests can inspect.
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"; mkdir -p "$TMPDIR"
 }
 
 @test "lp_prompt_ctx sizes the context to the glossary and caches it" {
   fake_whisper_probe
   export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
   source "$REPO/lib/common.sh"
+  run lp_prompt_ctx_cached "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
+  [ "$status" -eq 1 ]
   run lp_prompt_ctx "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
   [ "$status" -eq 0 ]
   [ "$output" = 38 ]
+  [ -f "$BATS_TEST_TMPDIR/whisper.wav2s" ]               # the probe got at least 2 s of audio
   [ -s "$LECTURE_ROOT/.state/prompt-ctx.cache" ]
+  run lp_prompt_ctx_cached "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
+  [ "$output" = 38 ]
   FAKE_TOKENS=5 run lp_prompt_ctx "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
   [ "$output" = 38 ]                                     # cached, the probe did not run again
   [ "$(wc -l < "$BATS_TEST_TMPDIR/whisper.calls")" -eq 1 ]
@@ -465,6 +479,19 @@ SH
   run lp_prompt_ctx "" /models/ggml-large-v3.bin
   [ "$output" = 0 ]                                      # no glossary, no context
   [ "$(wc -l < "$BATS_TEST_TMPDIR/whisper.calls")" -eq 2 ]
+  [ -z "$(ls -A "$TMPDIR")" ]
+}
+
+@test "lp_prompt_ctx passes a glossary with quotes and dollars through untouched" {
+  fake_whisper_probe
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
+  source "$REPO/lib/common.sh"
+  G='Shell: "$HOME", $PATH, `pwd`, a\b, it'"'"'s 100%'
+  FAKE_TOKENS=20 run lp_prompt_ctx "$G" /models/ggml-large-v3.bin
+  [ "$output" = 21 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/whisper.prompt")" = "$G" ]
+  run lp_prompt_ctx_cached "$G" /models/ggml-large-v3.bin
+  [ "$output" = 21 ]
 }
 
 @test "lp_prompt_ctx caps at 224 and falls back to 0 when it cannot count" {
@@ -476,7 +503,20 @@ SH
   FAKE_TOKENS=-1 run lp_prompt_ctx "no warning printed" /models/ggml-large-v3.bin
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = 0 ]
-  [ "$(grep -c . "$LECTURE_ROOT/.state/prompt-ctx.cache")" -eq 1 ]   # the failure was not cached
+  [[ "$output" == *"could not count"* ]]
+  FAKE_EXIT=1 run lp_prompt_ctx "probe failed" /models/ggml-large-v3.bin
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = 0 ]                                 # a failed or timed-out probe is not trusted
+  [ "$(grep -c . "$LECTURE_ROOT/.state/prompt-ctx.cache")" -eq 1 ]   # no failure was cached
+  [ -z "$(ls -A "$TMPDIR")" ]
+  # python3 failing to write the probe WAV falls back to 0, also under set -e
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$BATS_TEST_TMPDIR/fakebin/python3"
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/python3"
+  run bash -ec 'source "$1"; lp_prompt_ctx "no python" /models/ggml-large-v3.bin; echo survived' _ "$REPO/lib/common.sh"
+  [ "$status" -eq 0 ]
+  [ "${lines[-2]}" = 0 ]
+  [ "${lines[-1]}" = survived ]
+  [ -z "$(ls -A "$TMPDIR")" ]
 }
 
 @test "lecture-transcribe and lecture-live pass the glossary-sized context" {
@@ -505,9 +545,43 @@ SH
   rm -f "$LECTURE_ROOT/.state/prompt-ctx.cache"
   FAKE_TOKENS=11 lecture-live net301 "live ctx" > "$BATS_TEST_TMPDIR/live.out" 2>&1 &
   pid=$!
-  sleep 2
+  # wait (up to 10 s) for the probe and the first segment call, not a fixed sleep
+  for _ in $(seq 100); do
+    grep -q -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" 2>/dev/null && break
+    sleep 0.1
+  done
   kill -TERM "$pid"; wait "$pid" || true
   pkill -f "$BATS_TEST_TMPDIR/fakebin/ffmpeg" 2>/dev/null || true
   cat "$BATS_TEST_TMPDIR/live.out"
+  grep -q "measuring the glossary once" "$BATS_TEST_TMPDIR/live.out"
   grep -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" | grep -q -- ' -mc 12 '
+  # once cached, live mode starts without measuring again
+  : > "$BATS_TEST_TMPDIR/whisper.calls"
+  lecture-live net301 "live ctx two" > "$BATS_TEST_TMPDIR/live2.out" 2>&1 &
+  pid=$!
+  for _ in $(seq 100); do
+    grep -q -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" 2>/dev/null && break
+    sleep 0.1
+  done
+  kill -TERM "$pid"; wait "$pid" || true
+  pkill -f "$BATS_TEST_TMPDIR/fakebin/ffmpeg" 2>/dev/null || true
+  ! grep -q "measuring the glossary" "$BATS_TEST_TMPDIR/live2.out"
+  ! grep -q -- ' -mc 2 ' "$BATS_TEST_TMPDIR/whisper.calls"
+  grep -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" | grep -q -- ' -mc 12 '
+}
+
+@test "lecture-setup measures every course glossary once" {
+  fake_whisper_probe
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" WHISPER_MODELS="$HOME/models"
+  mkdir -p "$WHISPER_MODELS"; printf x > "$WHISPER_MODELS/ggml-large-v3-turbo.bin"
+  FAKE_TOKENS=30 run lecture-setup --defaults </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Measuring each course glossary"* ]]
+  [[ "$output" == *"CS101 glossary: 30 tokens, context 31"* ]]
+  [ "$(grep -c . "$LECTURE_ROOT/.state/prompt-ctx.cache")" -eq 4 ]   # four rows with a glossary
+  grep -q -- 'ggml-large-v3-turbo.bin' "$BATS_TEST_TMPDIR/whisper.calls"
+  : > "$BATS_TEST_TMPDIR/whisper.calls"
+  run lecture-setup --defaults </dev/null
+  [ "$status" -eq 0 ]
+  [ ! -s "$BATS_TEST_TMPDIR/whisper.calls" ]             # all cached, nothing measured again
 }

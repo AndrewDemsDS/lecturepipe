@@ -111,9 +111,10 @@ recognised in place.
 
 The glossary is passed to Whisper as its prompt and carried through the entire recording.
 Lecturer names, tool names and acronyms the lecturer uses belong there. Keep it
-under about 40 terms, the prompt is capped at 223 tokens and Whisper keeps the end of a
-longer one. The first run with a new glossary spends a few seconds counting its tokens
-(cached in `~/lectures/.state/prompt-ctx.cache`).
+under about 40 terms. Whisper's context is capped at 224 tokens, so the glossary gets at
+most 223 and Whisper keeps the end of a longer one. Each glossary's token count is
+measured once, by `lecture-setup` or by the first run that uses it, and cached in
+`~/lectures/.state/prompt-ctx.cache`.
 
 ## Notes engine
 
@@ -194,8 +195,9 @@ Watcher: `systemctl --user status lecture-watch.path`, log in `~/lectures/.state
   of a real lecture once. Plain `-mc 0` prevents that but also drops the glossary, because
   whisper.cpp then builds no prompt at all. So `-mc` is set to the glossary's token count + 1:
   the glossary takes all of it but one slot, and the rolling text gets nothing. On a 5 minute
-  Greek clip that raised glossary terms spelled as listed from 6 to 9, with no loop. `srt2md.py` also measures repetition and stamps `repetition_warning:` in the
-  frontmatter rather than filing silent garbage.
+  Greek clip that raised glossary terms spelled as listed from 6 to 9, with no loop.
+  `srt2md.py` also measures repetition and stamps `repetition_warning:` in the frontmatter
+  rather than filing silent garbage.
 - **No noise suppression.** On a real take, RNNoise made the audio measurably cleaner and the
   transcript measurably worse (a dropped clause, two word errors). Whisper is trained on noisy
   speech. The chain is `adeclip`, a highpass at 80 Hz and `loudnorm`, nothing else. Fix noise

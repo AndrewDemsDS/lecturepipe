@@ -39,7 +39,10 @@ IFS=$'\t' read -r LANG_CODE PROMPT _ <<< "${ROW:-}"
 LANG_CODE="${LANG_CODE:-en}"
 PROMPT_ARGS=(); [[ -n "${PROMPT:-}" ]] && PROMPT_ARGS=(--prompt "$PROMPT" --carry-initial-prompt)
 # Zero rolling context, whole glossary: see the -mc note in lecture-transcribe.
-CTX="$(lp_prompt_ctx "${PROMPT:-}" "$MODEL")"
+if ! CTX="$(lp_prompt_ctx_cached "${PROMPT:-}" "$MODEL")"; then
+  echo "  measuring the glossary once (cached afterwards)…"
+  CTX="$(lp_prompt_ctx "${PROMPT:-}" "$MODEL")"
+fi
 
 # RAM only. Refuse to fall back to disk silently.
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

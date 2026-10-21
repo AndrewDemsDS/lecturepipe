@@ -233,6 +233,19 @@ while [[ "$ADD" == 1 ]]; do
   yesno "Another?" n || ADD=0
 done
 
+# Count each glossary's tokens now, so the first lecture of a course does not
+# spend its opening seconds on it (see lp_prompt_ctx).
+WARM_MODEL="$NEW_MODELS/$([[ $NEW_MODEL == turbo ]] && echo ggml-large-v3-turbo.bin || echo ggml-large-v3.bin)"
+if [[ -s "$WARM_MODEL" ]] && command -v whisper-cli >/dev/null 2>&1; then
+  echo "  ${dim}Measuring each course glossary for Whisper once (cached for later runs)…${off}"
+  while read -r code; do
+    IFS=$'\t' read -r _ gl _ <<< "$(LECTURE_ROOT="$NEW_ROOT" lp_course_lookup "$code")"
+    [[ -n "${gl:-}" ]] || continue
+    ctx="$(LECTURE_ROOT="$NEW_ROOT" lp_prompt_ctx "$gl" "$WARM_MODEL")"
+    [[ "$ctx" != 0 ]] && ok "$code glossary: $(( ctx - 1 )) tokens, context $ctx"
+  done < <(awk -F'|' '!/^[[:space:]]*#/ && NF >= 3 { gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1 }' "$CONF")
+fi
+
 # ---------------------------------------------------------------- 7. write + watcher
 step "8/8  Save"
 mkdir -p "$(dirname "$LECTUREPIPE_CONFIG")"
