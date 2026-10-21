@@ -585,3 +585,24 @@ SH
   [ "$status" -eq 0 ]
   [ ! -s "$BATS_TEST_TMPDIR/whisper.calls" ]             # all cached, nothing measured again
 }
+
+@test "lecture-pending moves phone recordings from the vault inbox" {
+  export LECTURE_NOTES_ROOT="$BATS_TEST_TMPDIR/vault"
+  inbox="$LECTURE_NOTES_ROOT/.lecturepipe-inbox"
+  mkdir -p "$inbox"
+  : > "$inbox/NET301_2026-10-20_routing.wav"
+  : > "$inbox/NET301_2026-10-20_old.wav.part"
+  : > "$inbox/NET301_2026-10-21_fresh.wav"
+  : > "$inbox/.~NET301_tmp.wav"
+  touch -d '10 minutes ago' "$inbox/.~NET301_tmp.wav"
+  touch -d '10 minutes ago' "$inbox/NET301_2026-10-20_routing.wav" "$inbox/NET301_2026-10-20_old.wav.part"
+  run lecture-pending
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"phone recording queued: NET301_2026-10-20_routing.wav"* ]]
+  [ -f "$LECTURE_ROOT/inbox/NET301_2026-10-20_routing.wav" ]
+  [ ! -e "$inbox/NET301_2026-10-20_routing.wav" ]
+  [ -f "$inbox/NET301_2026-10-20_old.wav.part" ]
+  [ -f "$inbox/NET301_2026-10-21_fresh.wav" ]
+  [ ! -e "$LECTURE_ROOT/inbox/NET301_2026-10-21_fresh.wav" ]
+  [ -f "$inbox/.~NET301_tmp.wav" ]
+}
