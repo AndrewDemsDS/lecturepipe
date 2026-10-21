@@ -38,6 +38,8 @@ ROW="$(lp_course_lookup "$COURSE")"; [[ -n "$ROW" ]] || ROW="$(lp_course_lookup 
 IFS=$'\t' read -r LANG_CODE PROMPT _ <<< "${ROW:-}"
 LANG_CODE="${LANG_CODE:-en}"
 PROMPT_ARGS=(); [[ -n "${PROMPT:-}" ]] && PROMPT_ARGS=(--prompt "$PROMPT" --carry-initial-prompt)
+# Zero rolling context, whole glossary: see the -mc note in lecture-transcribe.
+CTX="$(lp_prompt_ctx "${PROMPT:-}" "$MODEL")"
 
 # RAM only. Refuse to fall back to disk silently.
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -110,7 +112,7 @@ transcribe_segment() {  # $1 = index
   ffmpeg -nostdin -loglevel error -y -f s16le -ar 16000 -ac 1 -i "$raw" "$wav"
   shred -u "$raw" 2>/dev/null || rm -f "$raw"
   whisper-cli -m "$MODEL" -f "$wav" -l "$LANG_CODE" "${PROMPT_ARGS[@]}" "${VAD_ARGS[@]}" \
-    -bs 5 -bo 5 -et 2.4 -lpt -1.0 -sns -mc 0 -t "$LECTURE_THREADS" -ml 0 \
+    -bs 5 -bo 5 -et 2.4 -lpt -1.0 -sns -mc "$CTX" -t "$LECTURE_THREADS" -ml 0 \
     -osrt -otxt -of "$out" -np >/dev/null 2>&1 || echo "  ! whisper failed on segment $i" >&2
   shred -u "$wav" 2>/dev/null || rm -f "$wav"
   if [[ -s "$out.srt" ]]; then

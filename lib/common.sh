@@ -69,6 +69,42 @@ lp_course_lookup() {
       print lang "\t" prompt "\t" opts; exit }' "$conf"
 }
 
+# lp_prompt_ctx GLOSSARY MODEL -> the value for whisper-cli -mc.
+# whisper.cpp builds no decoder prompt at all with -mc 0, so the glossary only
+# reaches the decoder with a context of at least its own size. With
+# --carry-initial-prompt the glossary keeps min(tokens, mc - 1) tokens and the
+# rolling decoded text gets what is left, so mc = tokens + 1 carries the whole
+# glossary and leaves zero rolling context (see the -mc note in lecture-transcribe).
+# Whisper caps the prompt at 224 tokens (half its text context).
+# There is no tokenizer binary, so a 1 s silent probe with -mc 2 makes whisper-cli
+# report the count in its "initial prompt is too long (N tokens)" warning.
+# Cached per model and glossary. Prints 0 (the old, glossary-less behaviour) when
+# the count cannot be read.
+lp_prompt_ctx() {
+  local glossary="$1" model="$2" cache key hit wav out n
+  [[ -n "$glossary" ]] || { echo 0; return 0; }
+  cache="$LECTURE_ROOT/.state/prompt-ctx.cache"
+  key="$(printf '%s\n%s' "$(basename "$model")" "$glossary" | sha256sum | cut -c1-32)"
+  hit="$(awk -v k="$key" '$1 == k { print $2; exit }' "$cache" 2>/dev/null || true)"
+  [[ "$hit" =~ ^[0-9]+$ ]] && { echo "$hit"; return 0; }
+  wav="$(mktemp --suffix=.wav)"
+  python3 -I -c 'import sys, wave
+w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+w.writeframes(bytes(32000)); w.close()' "$wav"
+  # No -np: it would also silence the warning.
+  out="$(whisper-cli -m "$model" -f "$wav" -l en --prompt "$glossary" --carry-initial-prompt -mc 2 2>&1 || true)"
+  rm -f "$wav"
+  n="$(printf '%s\n' "$out" | grep -oE 'initial prompt is too long \([0-9]+ tokens\)' | grep -oE '[0-9]+' | head -1 || true)"
+  if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+    echo "  ! could not count the glossary tokens, transcribing without the glossary" >&2
+    echo 0; return 0
+  fi
+  n=$(( n + 1 )); (( n > 224 )) && n=224
+  mkdir -p "${cache%/*}"
+  printf '%s %s\n' "$key" "$n" >> "$cache"
+  echo "$n"
+}
+
 # Lecture number from a file stem: "lecture-7-awk" -> 7. Empty when absent.
 lp_lecture_number() {
   printf '%s' "$1" | grep -oiE '(lecture|lec|dialexi)[-_ ]?[0-9]{1,2}' | grep -oE '[0-9]+$' | head -1 || true

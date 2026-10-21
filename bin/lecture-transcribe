@@ -118,20 +118,24 @@ DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$WAV" 2>/dev/
 [[ "$DUR" =~ ^[0-9]+$ ]] || DUR=0
 printf '  duration: %02d:%02d:%02d\n' $((DUR/3600)) $((DUR%3600/60)) $((DUR%60))
 
-# -mc 0 (max-context 0) is load-bearing: Whisper conditions each window on its
+# The rolling context must stay at zero: Whisper conditions each window on its
 # own previous output, so one repeated sentence can reinforce itself into an
 # endless loop. It cost 60 minutes of a real lecture once. Do not remove.
+# -mc is still not 0: whisper.cpp then drops the prompt too, glossary included.
+# lp_prompt_ctx sizes it to the glossary + 1, which carries the whole glossary
+# and leaves exactly zero tokens for the rolling context.
 echo "  [2/3] transcribing…"
 START=$(date +%s)
 PROMPT_ARGS=()
 [[ -n "$PROMPT" ]] && PROMPT_ARGS=(--prompt "$PROMPT" --carry-initial-prompt)
+CTX="$(lp_prompt_ctx "$PROMPT" "$MODEL")"
 whisper-cli \
   -m "$MODEL" -f "$WAV" \
   -l "$LANG_CODE" \
   "${PROMPT_ARGS[@]}" \
   "${VAD_ARGS[@]}" \
   -bs 5 -bo 5 -et 2.4 -lpt -1.0 -sns \
-  -mc 0 \
+  -mc "$CTX" \
   -t "$LECTURE_THREADS" -ml 0 \
   -osrt -otxt -oj \
   -of "$OUTDIR/$NAME" \

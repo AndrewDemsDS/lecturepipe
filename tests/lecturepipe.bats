@@ -426,3 +426,88 @@ SH
   kill "$decoy" 2>/dev/null
   [ "$status" -ne 0 ] || [ -n "$(pgrep -a -x ffmpeg | grep -- '-f pulse')" ]   # unless a real recorder runs
 }
+
+# A fake whisper-cli that answers the token-count probe the way whisper.cpp 1.9 does:
+# with -mc 2 and --carry-initial-prompt the static prompt keeps 1 token and the
+# warning names the real count. FAKE_TOKENS sets that count, -1 prints no warning.
+fake_whisper_probe() {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin"
+  cat > "$BATS_TEST_TMPDIR/fakebin/whisper-cli" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$BATS_TEST_TMPDIR/whisper.calls"
+args=" $* "
+if [[ "$args" == *" -mc 2 "* ]]; then
+  [[ "$args" == *" --carry-initial-prompt "* && "$args" != *" -np "* ]] || exit 0
+  [[ "${FAKE_TOKENS:-37}" -ge 0 ]] && echo "whisper_full_with_state: initial prompt is too long (${FAKE_TOKENS:-37} tokens), will use only the last 1 tokens" >&2
+  exit 0
+fi
+OF=""; while [[ $# -gt 0 ]]; do [[ "$1" == -of ]] && OF="$2"; shift; done
+[[ -n "$OF" ]] || exit 0
+cp "$REPO_FIXTURES/sample.srt" "$OF.srt"; echo "Good morning everyone." > "$OF.txt"; : > "$OF.json"
+SH
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/whisper-cli"
+  export REPO_FIXTURES="$REPO/tests/fixtures"
+}
+
+@test "lp_prompt_ctx sizes the context to the glossary and caches it" {
+  fake_whisper_probe
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
+  source "$REPO/lib/common.sh"
+  run lp_prompt_ctx "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
+  [ "$status" -eq 0 ]
+  [ "$output" = 38 ]
+  [ -s "$LECTURE_ROOT/.state/prompt-ctx.cache" ]
+  FAKE_TOKENS=5 run lp_prompt_ctx "Networks. Terms: OSPF, BGP." /models/ggml-large-v3.bin
+  [ "$output" = 38 ]                                     # cached, the probe did not run again
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/whisper.calls")" -eq 1 ]
+  FAKE_TOKENS=5 run lp_prompt_ctx "Another glossary" /models/ggml-large-v3.bin
+  [ "$output" = 6 ]                                      # a new glossary is measured again
+  run lp_prompt_ctx "" /models/ggml-large-v3.bin
+  [ "$output" = 0 ]                                      # no glossary, no context
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/whisper.calls")" -eq 2 ]
+}
+
+@test "lp_prompt_ctx caps at 224 and falls back to 0 when it cannot count" {
+  fake_whisper_probe
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
+  source "$REPO/lib/common.sh"
+  FAKE_TOKENS=500 run lp_prompt_ctx "a very long glossary" /models/ggml-large-v3.bin
+  [ "$output" = 224 ]
+  FAKE_TOKENS=-1 run lp_prompt_ctx "no warning printed" /models/ggml-large-v3.bin
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = 0 ]
+  [ "$(grep -c . "$LECTURE_ROOT/.state/prompt-ctx.cache")" -eq 1 ]   # the failure was not cached
+}
+
+@test "lecture-transcribe and lecture-live pass the glossary-sized context" {
+  fake_whisper_probe
+  mkdir -p "$BATS_TEST_TMPDIR/models" "$BATS_TEST_TMPDIR/run"
+  printf x > "$BATS_TEST_TMPDIR/models/ggml-large-v3.bin"
+  cp "$REPO/tests/fixtures/courses.conf" "$LECTURE_ROOT/courses.conf"
+  cat > "$BATS_TEST_TMPDIR/fakebin/ffmpeg" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"-f pulse"* ]]; then trap 'exit 0' TERM; head -c $((30*32000)) /dev/zero; while :; do sleep 0.2; done; fi
+printf x > "${@: -1}"
+SH
+  printf '#!/usr/bin/env bash\necho 20\n' > "$BATS_TEST_TMPDIR/fakebin/ffprobe"
+  printf '#!/usr/bin/env bash\necho tmpfs\n' > "$BATS_TEST_TMPDIR/fakebin/findmnt"
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/"*
+  export WHISPER_MODELS="$BATS_TEST_TMPDIR/models" LECTURE_NOTES_ENGINE=off
+  export XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/run" LECTURE_LIVE_SEGMENT=60
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
+  mkdir -p "$LECTURE_ROOT/inbox"
+  printf x > "$LECTURE_ROOT/inbox/NET301_2026-10-19_routing.flac"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-19_routing.flac"
+  [ "$status" -eq 0 ]
+  grep -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" | grep -q -- ' -mc 38 '
+  ! grep -q -- ' -mc 0 ' "$BATS_TEST_TMPDIR/whisper.calls"
+  : > "$BATS_TEST_TMPDIR/whisper.calls"
+  rm -f "$LECTURE_ROOT/.state/prompt-ctx.cache"
+  FAKE_TOKENS=11 lecture-live net301 "live ctx" > "$BATS_TEST_TMPDIR/live.out" 2>&1 &
+  pid=$!
+  sleep 2
+  kill -TERM "$pid"; wait "$pid" || true
+  pkill -f "$BATS_TEST_TMPDIR/fakebin/ffmpeg" 2>/dev/null || true
+  cat "$BATS_TEST_TMPDIR/live.out"
+  grep -- '-of ' "$BATS_TEST_TMPDIR/whisper.calls" | grep -q -- ' -mc 12 '
+}
