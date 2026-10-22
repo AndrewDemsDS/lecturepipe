@@ -128,14 +128,15 @@ lp_lecture_number() {
   printf '%s' "$1" | grep -oiE '(lecture|lec|dialexi)[-_ ]?[0-9]{1,2}' | grep -oE '[0-9]+$' | head -1 || true
 }
 
-# The vault folder for COURSE: the single ~/notes/*_<course> directory, or nothing.
+# The vault folder for COURSE, or nothing unless exactly one matches. A folder belongs to
+# COURSE (any case) when it is named "<CODE>", "<CODE> <Title>" or the older "<title>_<code>".
 lp_vault_course_dir() {
   [[ -n "$LECTURE_NOTES_ROOT" ]] || return 0
-  local course="${1,,}" dirs
-  shopt -s nullglob
-  dirs=("$LECTURE_NOTES_ROOT"/*_"$course")
-  shopt -u nullglob
-  [[ -d "$LECTURE_NOTES_ROOT/$course" ]] && dirs+=("$LECTURE_NOTES_ROOT/$course")
+  local course="${1,,}" d name dirs=()
+  for d in "$LECTURE_NOTES_ROOT"/*/; do
+    d="${d%/}"; name="${d##*/}"; name="${name,,}"
+    [[ "$name" == "$course" || "$name" == "$course "* || "$name" == *"_$course" ]] && dirs+=("$d")
+  done
   [[ ${#dirs[@]} -eq 1 ]] && printf '%s\n' "${dirs[0]}"
   return 0
 }

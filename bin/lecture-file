@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # File a transcribed lecture into its course folder in the notes vault:
-#   $LECTURE_NOTES_ROOT/<anything>_<code>/lectures/NN/  <- .md, .srt, .txt, .json, audio
+#   $LECTURE_NOTES_ROOT/<CODE Title>/lectures/NN/  <- .md, .srt, .txt, .json, audio
 # Symlinks stay behind in $LECTURE_ROOT/{transcripts,audio}/<CODE>/ so the index,
 # status and note re-runs keep working.
 #
@@ -25,7 +25,7 @@ STEM="$(basename "$NOTE" .md)"
 SRCDIR="$(dirname "$NOTE")"
 
 CDIR="$(lp_vault_course_dir "$COURSE")"
-[[ -n "$CDIR" ]] || { echo "  ! no single $LECTURE_NOTES_ROOT/*_${COURSE,,} folder for $COURSE; not filed" >&2; exit 1; }
+[[ -n "$CDIR" ]] || { echo "  ! no single course folder for $COURSE in $LECTURE_NOTES_ROOT (\"$COURSE Title\" or \"title_${COURSE,,}\"); not filed" >&2; exit 1; }
 
 NN="${2:-}"
 [[ -n "$NN" ]] || NN="$(lp_lecture_number "$STEM")"

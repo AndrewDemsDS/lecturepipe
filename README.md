@@ -155,7 +155,8 @@ names and course codes in `courses.conf` are yours alone; the repo ships an exam
 ## Filing into a notes vault
 
 With a vault configured, a finished lecture moves to
-`<vault>/<anything>_<course>/lectures/NN/` and symlinks are left behind so the index and
+`<vault>/<CODE Title>/lectures/NN/` (for example `NET301 Computer Networks/lectures/07/`, older
+`<title>_<code>` folders still match) and symlinks are left behind so the index and
 status keep working. `NN` comes from `lecture-N` in the recording name; without one, the
 lecture goes under `lectures/<date>/` for you to sort. Slide PDFs already in that folder are
 used by the notes pass, so download the deck before the recording ends. A PDF named after

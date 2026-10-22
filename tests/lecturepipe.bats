@@ -174,6 +174,40 @@ mknote() {  # mknote path course lang words
   [[ "$output" == *"already filed"* ]]
 }
 
+@test "lecture-file files into a \"CODE Title\" folder with spaces" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  mkdir -p "$LECTURE_NOTES_ROOT/NET301 Computer Networks" "$LECTURE_NOTES_ROOT/NET3010 Other" "$LECTURE_ROOT/transcripts/NET301" "$LECTURE_ROOT/audio/NET301"
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-19_lecture-7-routing.md"
+  mknote "$N" NET301 en
+  : > "$LECTURE_ROOT/audio/NET301/rec.flac"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/rec.flac\"|" "$N"
+  run lecture-file "$N"
+  [ "$status" -eq 0 ]
+  D="$LECTURE_NOTES_ROOT/NET301 Computer Networks/lectures/07"
+  [ -f "$D/2026-10-19_lecture-7-routing.md" ]
+  [ -f "$D/rec.flac" ]
+  [ "$(readlink "$N")" = "$D/2026-10-19_lecture-7-routing.md" ]
+  grep -q "audio: \"$D/rec.flac\"" "$D/2026-10-19_lecture-7-routing.md"
+}
+
+@test "lecture-file refuses when two folders match the course" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  mkdir -p "$LECTURE_NOTES_ROOT/NET301 Computer Networks" "$LECTURE_NOTES_ROOT/networks_net301" "$LECTURE_ROOT/transcripts/NET301"
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-19_lecture-7-routing.md"
+  mknote "$N" NET301 en
+  run lecture-file "$N"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no single course folder"* ]]
+  [ ! -L "$N" ]
+}
+
+@test "notes prompt finds slides in a \"CODE Title\" folder" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  run python3 -c "import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../lib'); import notes; import os; os.makedirs('$HOME/vault/NET301 Computer Networks', exist_ok=True); os.makedirs('$HOME/vault/_unfiled', exist_ok=True); print(notes.course_dirs('$HOME/vault', 'NET301'))"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NET301 Computer Networks"* ]]
+}
+
 @test "lecture-file without a vault is a no-op" {
   N="$BATS_TEST_TMPDIR/n.md"; mknote "$N" NET301 en
   run lecture-file "$N"

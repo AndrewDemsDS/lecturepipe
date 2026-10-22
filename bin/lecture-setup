@@ -76,7 +76,7 @@ ask NEW_ROOT "Where should recordings and transcripts live?" "$LECTURE_ROOT"
 NEW_ROOT="${NEW_ROOT/#\~/$HOME}"
 mkdir -p "$NEW_ROOT"/{inbox,audio,transcripts,.state} && ok "$NEW_ROOT"
 echo "  ${dim}A notes vault (Obsidian, Nextcloud folder, plain directory) gets finished lectures filed"
-echo "  into <vault>/<anything>_<course>/lectures/NN/ next to the slides. Leave empty to skip.${off}"
+echo "  into <vault>/<CODE Title>/lectures/NN/ next to the slides. Leave empty to skip.${off}"
 ask NEW_VAULT "Notes vault directory (empty = none)" "$LECTURE_NOTES_ROOT"
 NEW_VAULT="${NEW_VAULT/#\~/$HOME}"
 if [[ -n "$NEW_VAULT" ]]; then

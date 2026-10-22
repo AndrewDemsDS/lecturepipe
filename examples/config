@@ -6,7 +6,7 @@
 LECTURE_ROOT="$HOME/lectures"
 
 # Your notes vault. Finished lectures are moved to
-#   $LECTURE_NOTES_ROOT/<anything>_<course>/lectures/NN/
+#   $LECTURE_NOTES_ROOT/<CODE Title>/lectures/NN/ (older <title>_<code> folders still match)
 # and symlinked back. Leave empty to keep everything under LECTURE_ROOT.
 LECTURE_NOTES_ROOT=""
 

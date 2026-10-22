@@ -54,6 +54,17 @@ def strip_sections(template):
     return re.sub(r"<!-- section:\w+ -->\n?.*?<!-- /section:\w+ -->\n?", "", template, flags=re.S)
 
 
+def course_dirs(notes_root, course):
+    """Vault folders for COURSE: "<CODE>", "<CODE> <Title>" or the older "<title>_<code>", any case."""
+    c = course.lower()
+    out = []
+    for name in sorted(os.listdir(notes_root)) if os.path.isdir(notes_root) else []:
+        n = name.lower()
+        if os.path.isdir(os.path.join(notes_root, name)) and (n == c or n.startswith(c + " ") or n.endswith("_" + c)):
+            out.append(os.path.join(notes_root, name))
+    return out
+
+
 def lecture_dir(note_path, course, notes_root):
     """Where this note is or will be filed. None when there is no vault."""
     real = os.path.realpath(note_path)
@@ -66,8 +77,7 @@ def lecture_dir(note_path, course, notes_root):
     m = re.search(r"(?i)(lecture|lec|dialexi)[-_ ]?(\d{1,2})", stem)
     if not m:
         return None
-    cands = glob.glob(os.path.join(notes_root, f"*_{course.lower()}")) + \
-        glob.glob(os.path.join(notes_root, course.lower()))
+    cands = course_dirs(notes_root, course)
     if len(cands) != 1:
         return None
     return os.path.join(cands[0], "lectures", f"{int(m.group(2)):02d}")
