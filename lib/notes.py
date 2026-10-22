@@ -55,11 +55,15 @@ def strip_sections(template):
 
 
 def course_dirs(notes_root, course):
-    """Vault folders for COURSE: "<CODE>", "<CODE> <Title>" or the older "<title>_<code>", any case."""
+    """Vault folders for COURSE: "<CODE>", "<CODE> <Title>" or the older "<title>_<code>", any case.
+
+    Dot names are skipped, like the "*/" glob in lp_vault_course_dir."""
     c = course.lower()
     out = []
     for name in sorted(os.listdir(notes_root)) if os.path.isdir(notes_root) else []:
         n = name.lower()
+        if name.startswith("."):
+            continue
         if os.path.isdir(os.path.join(notes_root, name)) and (n == c or n.startswith(c + " ") or n.endswith("_" + c)):
             out.append(os.path.join(notes_root, name))
     return out
