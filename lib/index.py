@@ -21,7 +21,7 @@ def main():
             p = os.path.join(cd, f)
             with open(p, encoding="utf-8") as fh:
                 doc = fh.read(2000)
-            g = dict(re.findall(r"^(date|title|duration|words|notes_status):\s*(.+)$", doc, re.M))
+            g = dict(re.findall(r"^(date|title|duration|words|notes_status):[ \t]*(\S.*?)[ \t]*$", doc, re.M))
             rows.setdefault(course, []).append({
                 "path": os.path.relpath(p, root),
                 "date": g.get("date", "?"),

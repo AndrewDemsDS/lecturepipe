@@ -23,7 +23,7 @@ MARK_END = "<!-- LECTURE-NOTES-END -->"
 
 def frontmatter(doc):
     m = re.match(r"---\n(.*?)\n---", doc, re.S)
-    return dict(re.findall(r"^(\w+):\s*(.+)$", m.group(1) if m else "", re.M))
+    return dict(re.findall(r"^(\w+):[ \t]*(\S.*?)[ \t]*$", m.group(1) if m else "", re.M))
 
 
 def read(path):

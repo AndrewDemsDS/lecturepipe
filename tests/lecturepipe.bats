@@ -664,3 +664,14 @@ SH
   [ "$(cat "$LECTURE_ROOT/audio/CS101/CS101_2026-10-20_b.wav")" = old ]
   [ ! -e "$LECTURE_ROOT/inbox/.incoming-stale.wav" ]
 }
+
+@test "frontmatter: an empty field is absent and does not swallow the next line" {
+  run python3 -I -c "
+import sys; sys.path.insert(0, '$REPO/lib'); import notes
+fm = notes.frontmatter('---\ncourse: \ndate: 2026-10-22\ninterrupted: true\n---\n')
+assert 'course' not in fm, fm
+assert fm['date'] == '2026-10-22', fm
+assert fm['interrupted'] == 'true', fm
+"
+  [ "$status" -eq 0 ]
+}

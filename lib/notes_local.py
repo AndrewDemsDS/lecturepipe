@@ -194,7 +194,7 @@ def main():
         print("  notes already generated, skipping")
         return
 
-    fm = dict(re.findall(r"^(course|date|language):\s*(.+)$", doc, re.M))
+    fm = dict(re.findall(r"^(course|date|language):[ \t]*(\S.*?)[ \t]*$", doc, re.M))
     course, date = fm.get("course", "?"), fm.get("date", "?")
     lang = fm.get("language", "en").split("-")[0]
     P = PROMPTS.get(lang, PROMPTS["en"])
