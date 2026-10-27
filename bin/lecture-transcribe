@@ -2,7 +2,11 @@
 # Transcribe one lecture recording with whisper.cpp, write the note, run the
 # notes pass, file it. Nothing but the optional notes pass leaves this machine.
 #
-#   lecture-transcribe <audio-or-video> [-m turbo|large] [-c COURSE] [--no-notes]
+#   lecture-transcribe <audio-or-video> [-m turbo|large] [-c COURSE] [--no-notes] [--force]
+#
+# A recording whose bytes were taken in before is not transcribed again: it exits 3,
+# and a copy in the inbox is moved to .state/duplicates/. --force (or LECTURE_DEDUP=off)
+# transcribes it anyway.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
@@ -10,6 +14,7 @@ source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 MODEL_KIND="$LECTURE_MODEL"
 COURSE=""
 NOTES=1
+FORCE=""
 FROM_SRT=""; DATE_ARG=""; TITLE_ARG=""; DUR_ARG=""
 ARGS=()
 
@@ -18,12 +23,13 @@ while [[ $# -gt 0 ]]; do
     -m|--model)  MODEL_KIND="$2"; shift 2 ;;
     -c|--course) COURSE="$2";     shift 2 ;;
     --no-notes)  NOTES=0;         shift   ;;
+    --force)     FORCE=1;         shift   ;;
     # Used by lecture-live: the SRT already exists, there is no audio to keep.
     --from-srt)  FROM_SRT="$2";   shift 2 ;;
     --date)      DATE_ARG="$2";   shift 2 ;;
     --title)     TITLE_ARG="$2";  shift 2 ;;
     --duration)  DUR_ARG="$2";    shift 2 ;;
-    -h|--help)   sed -n '2,5p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,9p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -46,6 +52,39 @@ case "$MODEL_KIND" in
   *) echo "error: --model must be turbo or large" >&2; exit 2 ;;
 esac
 [[ -n "$FROM_SRT" || -f "$MODEL" ]] || { echo "error: model missing: $MODEL (run lecture-setup)" >&2; exit 2; }
+
+# Same recording twice (the phone uploading one file under two names, a copy dropped in
+# by hand): hash the bytes as they arrived, before any GPU time is spent. The registry
+# row is claimed now, under a lock, and dropped again if this run fails.
+WORK=""; DEDUP_HASH=""; DEDUP_AT=""
+cleanup() {
+  local rc=$?
+  [[ -z "$WORK" ]] || rm -rf "$WORK"
+  [[ $rc -eq 0 || -z "$DEDUP_HASH" ]] || lp_dedup_set "$DEDUP_HASH" "$DEDUP_AT" "" || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+if [[ -z "$FROM_SRT" ]]; then
+  digest="$(lp_sha256 "$SRC")"; at="$(date +%FT%T)"
+  if ! earlier="$(lp_dedup_claim "$digest" "$(basename "$SRC")" "$at" "$FORCE")"; then
+    IFS=$'\t' read -r _ e_name e_at e_where <<< "$earlier"
+    [[ "$e_where" == - ]] && e_where="not finished: still running, or interrupted"
+    echo "= duplicate: $(basename "$SRC")"
+    echo "= same bytes as $e_name (taken in $e_at, $e_where)"
+    if [[ "$(dirname "$SRC")" == "$(realpath -m "$LECTURE_ROOT/inbox")" ]]; then
+      dupdir="$LECTURE_ROOT/.state/duplicates"; mkdir -p "$dupdir"
+      b="$(basename "$SRC")"; dst="$dupdir/$b"; n=2
+      while [[ -e "$dst" ]]; do dst="$dupdir/${b%.*}-$n.${b##*.}"; n=$((n+1)); done
+      mv -n "$SRC" "$dst"
+      echo "  moved to $dst, nothing transcribed"
+      echo "  to transcribe it anyway: lecture-transcribe --force \"$dst\""
+    else
+      echo "  nothing transcribed. To transcribe it anyway: lecture-transcribe --force \"$SRC\""
+    fi
+    exit 3
+  fi
+  DEDUP_HASH="$digest"; DEDUP_AT="$at"
+fi
 VAD_MODEL="$WHISPER_MODELS/ggml-silero-v6.2.0.bin"
 VAD_ARGS=()
 [[ -f "$VAD_MODEL" ]] && VAD_ARGS=(--vad -vm "$VAD_MODEL" -vt 0.5 -vsd 300 -vmsd 30 -vp 100)
@@ -98,7 +137,7 @@ if [[ -n "$FROM_SRT" ]]; then
   [[ -f "${SRC%.srt}.txt" && "${SRC%.srt}.txt" != "$OUTDIR/$NAME.txt" ]] && mv -f "${SRC%.srt}.txt" "$OUTDIR/$NAME.txt"
 else
 AUDIO_REF="$AUDIODIR/$BASE"
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"
 WAV="$WORK/audio.wav"
 
 echo "▶ $COURSE / $DATE: $SLUG"
@@ -162,5 +201,6 @@ fi
 # Filing into the vault never fails the run.
 lecture-file "$OUTDIR/$NAME.md" || echo "  ! filing failed (files still in $OUTDIR)"
 lecture-index >/dev/null 2>&1 || true
+[[ -z "$DEDUP_HASH" ]] || lp_dedup_set "$DEDUP_HASH" "$DEDUP_AT" "$(readlink -f "$OUTDIR/$NAME.md")" || true
 
 echo "✔ $OUTDIR/$NAME.md"

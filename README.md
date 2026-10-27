@@ -162,6 +162,28 @@ lecture goes under `lectures/<date>/` for you to sort. Slide PDFs already in tha
 used by the notes pass, so download the deck before the recording ends. A PDF named after
 the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extra reading.
 
+## Duplicate recordings
+
+A recording that reaches the inbox twice, say the phone app uploading one file under two
+names, is transcribed once. `lecture-transcribe` hashes every recording (sha256 of the
+bytes as they arrived) before it spends GPU time on it and lists it in
+`~/lectures/.state/audio-sha256.tsv` with its name, the intake time and the note it
+became. A recording whose hash is already listed is moved to `~/lectures/.state/duplicates/`
+(never deleted), and `watch.log` gets a `dup:` line naming the earlier recording. A run
+that fails takes its row out again, so a fixed file can go back in the inbox.
+
+Only byte-identical files match. A FLAC made from the same WAV, or a trimmed copy, is a
+new recording. To count audio you already have, hash the archive once (symlinks into the
+vault are followed):
+
+```sh
+lecture-dedup --backfill
+```
+
+To transcribe a listed recording again on purpose, run `lecture-transcribe --force FILE`,
+or drop it from the list with `lecture-dedup --forget FILE` and queue it as usual.
+`LECTURE_DEDUP=off` turns the check off.
+
 ## Commands
 
 | Command | Does |
@@ -171,10 +193,11 @@ the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extr
 | `lecture-record --keep-audio COURSE ["topic"]` | Record a FLAC into the inbox for later. |
 | `lecture-forget NOTE.md \| --course CODE [--audio]` | Erase a lecture and everything derived from it. |
 | `lecture-retention [--dry-run]` | Delete audio older than `LECTURE_AUDIO_RETENTION_DAYS`. |
-| `lecture-transcribe FILE [-m turbo] [--no-notes]` | Process one file by hand. |
+| `lecture-transcribe FILE [-m turbo] [--no-notes] [--force]` | Process one file by hand. `--force` transcribes a duplicate anyway. |
 | `lecture-notes NOTE.md [slides.pdf ...]` | Run or redo the notes pass. |
 | `lecture-watch` | Drain the inbox now. |
 | `lecture-pending [--list]` | Notes for transcripts that arrived without them (phone app, failed runs). Also moves finished recordings the phone app uploaded to `.lecturepipe-inbox/` in the notes vault into `inbox/`. Runs every 15 min from a timer. |
+| `lecture-dedup FILE \| --backfill \| --forget FILE \| --list` | Was this recording taken in before; hash the archive once; let a file be queued again. |
 | `lecture-file NOTE.md [NN]` | File into the vault by hand, or fix a lecture number. |
 | `lecture-index` | Rebuild `INDEX.md`. |
 | `lecture-status` | What is happening. |
@@ -226,6 +249,8 @@ Watcher: `systemctl --user status lecture-watch.path`, log in `~/lectures/.state
 - A recording cut off hard leaves a FLAC without a duration. Re-encode it with ffmpeg first.
 - When re-queueing a file, stop `lecture-watch.path` before `lecture-watch.service` and swap
   files only while the path unit is stopped, or the watcher re-transcribes the old file.
+  A file with the same bytes as one already transcribed is set aside as a duplicate: run
+  `lecture-dedup --forget FILE` before putting it back, or use `lecture-transcribe --force FILE`.
 
 ## Tests
 

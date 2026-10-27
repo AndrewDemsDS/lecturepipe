@@ -289,7 +289,7 @@ SH
   export REPO_FIXTURES="$REPO/tests/fixtures" WHISPER_MODELS="$BATS_TEST_TMPDIR/models" LECTURE_NOTES_ENGINE=off
   mkdir -p "$LECTURE_ROOT/inbox"
   printf x > "$LECTURE_ROOT/inbox/TEST_2026-10-19_pipeline-check.flac"
-  printf x > "$LECTURE_ROOT/inbox/cs101 intro.m4a"
+  printf y > "$LECTURE_ROOT/inbox/cs101 intro.m4a"   # other bytes, or it is a duplicate
   PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-transcribe "$LECTURE_ROOT/inbox/TEST_2026-10-19_pipeline-check.flac"
   [ "$status" -eq 0 ]
   [ -f "$LECTURE_ROOT/transcripts/TEST/2026-10-19_pipeline-check.md" ]
@@ -674,4 +674,173 @@ assert fm['date'] == '2026-10-22', fm
 assert fm['interrupted'] == 'true', fm
 "
   [ "$status" -eq 0 ]
+}
+
+# Fake ffmpeg/ffprobe/whisper-cli/sleep for the duplicate tests: no audio is decoded,
+# whisper-cli only copies the sample SRT and counts its calls.
+fake_transcriber() {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin" "$BATS_TEST_TMPDIR/models"
+  printf x > "$BATS_TEST_TMPDIR/models/ggml-large-v3.bin"
+  printf '#!/usr/bin/env bash\nprintf x > "${@: -1}"\n' > "$BATS_TEST_TMPDIR/fakebin/ffmpeg"
+  printf '#!/usr/bin/env bash\necho 20\n' > "$BATS_TEST_TMPDIR/fakebin/ffprobe"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$BATS_TEST_TMPDIR/fakebin/sleep"
+  cat > "$BATS_TEST_TMPDIR/fakebin/whisper-cli" <<'SH'
+#!/usr/bin/env bash
+echo call >> "$BATS_TEST_TMPDIR/whisper.calls"
+while [[ $# -gt 0 ]]; do [[ "$1" == -of ]] && OF="$2"; shift; done
+[[ -n "${FAKE_WHISPER_FAIL:-}" ]] && exit 0
+cp "$REPO_FIXTURES/sample.srt" "$OF.srt"; : > "$OF.txt"; : > "$OF.json"
+SH
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/"*
+  export REPO_FIXTURES="$REPO/tests/fixtures" WHISPER_MODELS="$BATS_TEST_TMPDIR/models" LECTURE_NOTES_ENGINE=off
+  export PATH="$BATS_TEST_TMPDIR/fakebin:$PATH"
+  mkdir -p "$LECTURE_ROOT/inbox"
+}
+whisper_calls() { [[ -f "$BATS_TEST_TMPDIR/whisper.calls" ]] && wc -l < "$BATS_TEST_TMPDIR/whisper.calls" || echo 0; }
+registry_rows() { grep -vc '^#' "$LECTURE_ROOT/.state/audio-sha256.tsv" || true; }
+
+@test "lecture-watch transcribes one copy of a byte-identical pair and moves the other aside" {
+  fake_transcriber
+  echo same-bytes > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lecture-10-signals.wav"
+  echo same-bytes > "$LECTURE_ROOT/inbox/NET301_2026-10-22_signals.wav"
+  run lecture-watch
+  [ "$status" -eq 0 ]
+  [ "$(whisper_calls)" -eq 1 ]
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_lecture-10-signals.md" ]
+  [ ! -e "$LECTURE_ROOT/transcripts/NET301/2026-10-22_signals.md" ]
+  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_signals.wav" ]
+  [ -z "$(ls -A "$LECTURE_ROOT/inbox")" ]
+  grep -q "dup:   NET301_2026-10-22_signals.wav, same bytes as NET301_2026-10-22_lecture-10-signals.wav (taken in " "$LECTURE_ROOT/.state/watch.log"
+  # one row: the hash of the bytes as they arrived, the name, and the note it became
+  [ "$(registry_rows)" -eq 1 ]
+  h="$(sha256sum < "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_signals.wav" | cut -d' ' -f1)"
+  awk -F'\t' -v h="$h" -v n="$LECTURE_ROOT/transcripts/NET301/2026-10-22_lecture-10-signals.md" \
+    '$1 == h && $2 == "NET301_2026-10-22_lecture-10-signals.wav" && $4 == n { ok = 1 } END { exit !ok }' \
+    "$LECTURE_ROOT/.state/audio-sha256.tsv"
+}
+
+@test "recordings with different bytes are both transcribed" {
+  fake_transcriber
+  echo one > "$LECTURE_ROOT/inbox/NET301_2026-10-22_a.wav"
+  echo two > "$LECTURE_ROOT/inbox/NET301_2026-10-22_b.wav"
+  run lecture-watch
+  [ "$status" -eq 0 ]
+  [ "$(whisper_calls)" -eq 2 ]
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_a.md" ]
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_b.md" ]
+  [ ! -d "$LECTURE_ROOT/.state/duplicates" ]
+  [ "$(registry_rows)" -eq 2 ]
+}
+
+@test "a duplicate in a later run names the earlier recording and a second copy gets a number" {
+  fake_transcriber
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav"
+  lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav" >/dev/null
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"same bytes as NET301_2026-10-22_first.wav"* ]]
+  [[ "$output" == *"lecture-transcribe --force"* ]]
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  [ "$status" -eq 3 ]
+  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again.wav" ]
+  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again-2.wav" ]
+  [ "$(whisper_calls)" -eq 1 ]
+}
+
+@test "a known recording outside the inbox is refused but not moved" {
+  fake_transcriber
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav"
+  lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav" >/dev/null
+  run lecture-transcribe "$LECTURE_ROOT/audio/NET301/NET301_2026-10-22_first.wav"
+  [ "$status" -eq 3 ]
+  [ -f "$LECTURE_ROOT/audio/NET301/NET301_2026-10-22_first.wav" ]
+  [ ! -d "$LECTURE_ROOT/.state/duplicates" ]
+}
+
+@test "--force and LECTURE_DEDUP=off transcribe a known recording again" {
+  fake_transcriber
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav"
+  lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav" >/dev/null
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_redo.wav"
+  run lecture-transcribe --force "$LECTURE_ROOT/inbox/NET301_2026-10-22_redo.wav"
+  [ "$status" -eq 0 ]
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_redo.md" ]
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_redo2.wav"
+  LECTURE_DEDUP=off run lecture-watch
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_redo2.md" ]
+  [ "$(whisper_calls)" -eq 3 ]
+  [ "$(registry_rows)" -eq 3 ]
+}
+
+@test "a failed transcription does not leave the recording listed" {
+  fake_transcriber
+  echo bytes > "$LECTURE_ROOT/inbox/NET301_2026-10-22_broken.wav"
+  FAKE_WHISPER_FAIL=1 run lecture-watch
+  [ -f "$LECTURE_ROOT/inbox/NET301_2026-10-22_broken.wav.failed" ]
+  [ "$(registry_rows)" -eq 0 ]
+  # fixed and put back: transcribed, not called a duplicate
+  mv "$LECTURE_ROOT/inbox/NET301_2026-10-22_broken.wav.failed" "$LECTURE_ROOT/inbox/NET301_2026-10-22_broken.wav"
+  run lecture-watch
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_broken.md" ]
+  [ "$(registry_rows)" -eq 1 ]
+}
+
+@test "lecture-dedup --backfill lists archived audio through symlinks, once" {
+  fake_transcriber
+  vault="$BATS_TEST_TMPDIR/vault/NET301 Networks/lectures/07"
+  mkdir -p "$vault" "$LECTURE_ROOT/audio/NET301" "$LECTURE_ROOT/audio/CS101"
+  echo filed > "$vault/NET301_2026-10-01_lecture-7-routing.flac"
+  ln -s "$vault/NET301_2026-10-01_lecture-7-routing.flac" "$LECTURE_ROOT/audio/NET301/NET301_2026-10-01_lecture-7-routing.flac"
+  echo local > "$LECTURE_ROOT/audio/CS101/CS101_2026-10-02_intro.m4a"
+  echo notes > "$LECTURE_ROOT/audio/CS101/readme.txt"
+  run lecture-dedup --backfill
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"2 added, 0 already listed"* ]]
+  grep -qF "$vault/NET301_2026-10-01_lecture-7-routing.flac" "$LECTURE_ROOT/.state/audio-sha256.tsv"
+  run lecture-dedup --backfill
+  [[ "$output" == *"0 added, 2 already listed"* ]]
+  [ "$(registry_rows)" -eq 2 ]
+  # the same file uploaded again under another name is not transcribed
+  echo filed > "$LECTURE_ROOT/inbox/NET301_2026-10-01_routing.flac"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-01_routing.flac"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"same bytes as NET301_2026-10-01_lecture-7-routing.flac"* ]]
+  [ "$(whisper_calls)" -eq 0 ]
+  run lecture-dedup "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-01_routing.flac"
+  [ "$status" -eq 3 ]
+  echo other > "$BATS_TEST_TMPDIR/new.wav"
+  run lecture-dedup "$BATS_TEST_TMPDIR/new.wav"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "new: "* ]]
+}
+
+@test "re-queue: lecture-dedup --forget lets the watcher take the same file again" {
+  fake_transcriber
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lecture-3-x.wav"
+  lecture-watch >/dev/null
+  cp "$LECTURE_ROOT/audio/NET301/NET301_2026-10-22_lecture-3-x.wav" "$BATS_TEST_TMPDIR/requeue.wav"
+  run lecture-dedup --forget "$BATS_TEST_TMPDIR/requeue.wav"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"forgotten:"* ]]
+  [ "$(registry_rows)" -eq 0 ]
+  rm "$LECTURE_ROOT/transcripts/NET301/"*
+  mv "$BATS_TEST_TMPDIR/requeue.wav" "$LECTURE_ROOT/inbox/NET301_2026-10-22_lecture-3-x-redo.wav"
+  run lecture-watch
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_lecture-3-x-redo.md" ]
+  [ "$(whisper_calls)" -eq 2 ]
+}
+
+@test "lecture-forget drops the erased recording from the duplicate list" {
+  fake_transcriber
+  echo keep > "$LECTURE_ROOT/inbox/NET301_2026-10-22_keep.wav"
+  echo gone > "$LECTURE_ROOT/inbox/NET301_2026-10-22_gone.wav"
+  lecture-watch >/dev/null
+  [ "$(registry_rows)" -eq 2 ]
+  run lecture-forget "$LECTURE_ROOT/transcripts/NET301/2026-10-22_gone.md" --yes
+  [ "$status" -eq 0 ]
+  [ "$(registry_rows)" -eq 1 ]
+  ! grep -q 'gone' "$LECTURE_ROOT/.state/audio-sha256.tsv"
+  grep -q 'keep' "$LECTURE_ROOT/.state/audio-sha256.tsv"
 }

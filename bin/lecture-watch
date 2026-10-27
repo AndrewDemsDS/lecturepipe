@@ -36,8 +36,12 @@ for f in "$INBOX"/*.{flac,wav,mp3,m4a,ogg,opus,mp4,mkv,webm,aac,wma}; do
   [[ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt 0 ]] || { log "skip (empty): $(basename "$f")"; continue; }
 
   log "start: $(basename "$f")"
-  if lecture-transcribe "$f" >>"$LOG" 2>&1; then
+  lecture-transcribe "$f" >>"$LOG" 2>&1; rc=$?
+  if [[ $rc -eq 0 ]]; then
     log "done:  $(basename "$f")"
+  elif [[ $rc -eq 3 && ! -e "$f" ]]; then
+    # Same bytes as a recording taken in before; lecture-transcribe moved it aside.
+    log "dup:   $(basename "$f"), $(grep '^= same bytes as ' "$LOG" | tail -1 | cut -c3-), moved to .state/duplicates/"
   else
     log "FAIL:  $(basename "$f"), left in inbox"
     mv -n "$f" "$INBOX/$(basename "$f").failed" 2>/dev/null

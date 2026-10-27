@@ -81,6 +81,15 @@ if [[ "$YES" == 0 ]]; then
   read -r -p "Delete? [y/N] " a </dev/tty || a=""
   [[ "${a,,}" == y* ]] || { echo "kept"; exit 1; }
 fi
+# The duplicate list (lecture-dedup) names the recording too: drop its rows, by the
+# hash of the audio and by the paths they point at.
+keys=()
+for f in "${UNIQ[@]}"; do
+  keys+=("$f")
+  case "${f,,}" in *.md|*.srt|*.txt|*.json) continue ;; esac
+  [[ -f "$f" && ! -L "$f" && -f "$(lp_dedup_registry)" ]] && keys+=("$(lp_sha256 "$f")")
+done
+lp_dedup_drop "${keys[@]}"
 for f in "${UNIQ[@]}"; do rm -f -- "$f"; done
 # Audio-only erasure: record that in the note so the frontmatter does not point at nothing.
 if [[ "$AUDIO_ONLY" == 1 && "$TARGET" == *.md ]]; then

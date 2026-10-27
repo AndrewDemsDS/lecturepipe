@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Recordings already taken in, by content. lecture-transcribe hashes every recording
+# before it spends GPU time on it and skips one whose bytes it has seen before. This
+# command looks after that list, $LECTURE_ROOT/.state/audio-sha256.tsv:
+#
+#   lecture-dedup FILE...           taken in before? Prints the earlier row, exit 3 if so
+#   lecture-dedup --backfill        add the audio already under $LECTURE_ROOT/audio (once)
+#   lecture-dedup --forget FILE...  drop these bytes from the list so they can be queued again
+#   lecture-dedup --list            print the list
+#
+# Only byte-identical files match: a FLAC made from the same WAV, or a trimmed copy, is new.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+usage() { sed -n '2,11p' "$0"; }
+MODE=check
+case "${1:-}" in
+  --backfill) MODE=backfill; shift ;;
+  --forget)   MODE=forget; shift ;;
+  --list)     MODE=list; shift ;;
+  -h|--help)  usage; exit 0 ;;
+  "")         usage; exit 2 ;;
+  -*)         echo "unknown argument: $1" >&2; exit 2 ;;
+esac
+
+case "$MODE" in
+list)
+  reg="$(lp_dedup_registry)"
+  [[ -f "$reg" ]] && cat "$reg"
+  exit 0 ;;
+
+backfill)
+  # Symlinks are followed: after filing, $LECTURE_ROOT/audio holds links into the vault.
+  # A file is hashed as it is now, which is what a later re-upload of the same file matches.
+  [[ -d "$LECTURE_ROOT/audio" ]] || { echo "no audio under $LECTURE_ROOT/audio"; exit 0; }
+  LECTURE_DEDUP=on; added=0; known=0
+  while IFS= read -r -d '' f; do
+    h="$(lp_sha256 "$f")" || { echo "  ! could not read $f" >&2; continue; }
+    if lp_dedup_claim "$h" "$(basename "$f")" "$(date -r "$f" +%FT%T)" "" "$(readlink -f "$f")" >/dev/null; then
+      added=$((added+1))
+    else
+      known=$((known+1))
+    fi
+  done < <(find -L "$LECTURE_ROOT/audio" -type f \( -iname '*.flac' -o -iname '*.wav' -o -iname '*.mp3' \
+    -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.mp4' -o -iname '*.mkv' \
+    -o -iname '*.webm' -o -iname '*.aac' -o -iname '*.wma' \) -print0 2>/dev/null | sort -z)
+  echo "backfill: $added added, $known already listed ($(lp_dedup_registry))"
+  exit 0 ;;
+esac
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+rc=0; drop=()
+for f in "$@"; do
+  if [[ "$MODE" == forget && "$f" =~ ^[0-9a-f]{64}$ && ! -e "$f" ]]; then drop+=("$f"); continue; fi
+  [[ -f "$f" ]] || { echo "no such file: $f" >&2; rc=2; continue; }
+  h="$(lp_sha256 "$f")" || { rc=2; continue; }
+  row="$(lp_dedup_find "$h")"
+  if [[ "$MODE" == forget ]]; then
+    if [[ -n "$row" ]]; then drop+=("$h"); echo "forgotten: $f"; else echo "not listed: $f"; fi
+  elif [[ -n "$row" ]]; then
+    IFS=$'\t' read -r _ e_name e_at e_where <<< "$row"
+    echo "taken in before: $f = $e_name (taken in $e_at, $e_where)"; [[ $rc -ne 0 ]] || rc=3
+  else
+    echo "new: $f"
+  fi
+done
+[[ "$MODE" != forget ]] || lp_dedup_drop "${drop[@]}"
+exit "$rc"

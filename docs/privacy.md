@@ -16,6 +16,7 @@ software does and the questions you need to settle yourself.
 | Whisper JSON (`.json`) | not produced | next to the transcript |
 | Notes | inside the `.md` | same |
 | Watcher log | `~/lectures/.state/watch.log`: filenames, timings, whisper's progress lines, which include transcript text in record mode | same |
+| Duplicate list | not written | `~/lectures/.state/audio-sha256.tsv`: a sha256 of each recording taken in, its file name, intake time and where it was filed. `lecture-forget` removes the rows of what it erases |
 | Index | `~/lectures/INDEX.md`: titles, dates, word counts | same |
 
 Live mode refuses to run if the runtime directory is not a tmpfs, so segments cannot

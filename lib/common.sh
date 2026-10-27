@@ -11,7 +11,7 @@ LECTUREPIPE_CONFIG="${LECTUREPIPE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/lect
 _lp_env_keys=(LECTURE_ROOT LECTURE_NOTES_ROOT WHISPER_MODELS LECTURE_MODEL LECTURE_MIC
   LECTURE_NOTES_ENGINE LECTURE_NOTES_CMD LECTURE_LLM LECTURE_LLM_CTX LECTURE_THREADS
   LECTURE_GPU_CARD LECTURE_NOTES_SLIDES LECTURE_SLIDES_MAX_PAGES LECTURE_SLIDES_MAX_BYTES
-  LECTURE_AUDIO_RETENTION_DAYS LECTURE_RECORD_MODE LECTURE_LIVE_SEGMENT)
+  LECTURE_AUDIO_RETENTION_DAYS LECTURE_RECORD_MODE LECTURE_LIVE_SEGMENT LECTURE_DEDUP)
 declare -A _lp_env=()
 for _k in "${_lp_env_keys[@]}"; do
   [[ -n "${!_k+x}" ]] && _lp_env[$_k]="${!_k}"
@@ -42,10 +42,11 @@ LECTURE_AUDIO_RETENTION_DAYS="${LECTURE_AUDIO_RETENTION_DAYS:-}"   # empty: keep
 LECTURE_NOTES_SLIDES="${LECTURE_NOTES_SLIDES:-on}"
 LECTURE_SLIDES_MAX_PAGES="${LECTURE_SLIDES_MAX_PAGES:-150}"
 LECTURE_SLIDES_MAX_BYTES="${LECTURE_SLIDES_MAX_BYTES:-300000}"
+LECTURE_DEDUP="${LECTURE_DEDUP:-on}"                    # on | off: skip recordings already taken in
 export LECTURE_ROOT LECTURE_NOTES_ROOT WHISPER_MODELS LECTURE_MODEL LECTURE_MIC \
   LECTURE_NOTES_ENGINE LECTURE_NOTES_CMD LECTURE_LLM LECTURE_LLM_CTX LECTURE_THREADS \
   LECTURE_GPU_CARD LECTURE_NOTES_SLIDES LECTURE_SLIDES_MAX_PAGES LECTURE_SLIDES_MAX_BYTES \
-  LECTURE_AUDIO_RETENTION_DAYS LECTURE_RECORD_MODE LECTURE_LIVE_SEGMENT LECTUREPIPE_LIB
+  LECTURE_AUDIO_RETENTION_DAYS LECTURE_RECORD_MODE LECTURE_LIVE_SEGMENT LECTURE_DEDUP LECTUREPIPE_LIB
 
 # The commands call each other by name; make sure the repo's own bin/ wins.
 case ":$PATH:" in *":$LECTUREPIPE_LIB/../bin:"*) ;; *) export PATH="$LECTUREPIPE_LIB/../bin:$PATH" ;; esac
@@ -160,6 +161,64 @@ lp_file_busy() {
 # merely contains the pattern (a terminal running `pgrep ...`, an editor, a script).
 lp_recorder_args() { pgrep -a -x ffmpeg 2>/dev/null | grep -- '-f pulse'; }
 lp_recording_running() { [[ -n "$(lp_recorder_args)" ]]; }
+
+# Duplicate recordings. Every recording taken in is hashed before it is transcribed and
+# listed in .state/audio-sha256.tsv: sha256, original name, intake time, where it went
+# (the note, or the archived audio for rows from `lecture-dedup --backfill`, "-" while
+# it is still being transcribed). The hash is of the bytes as they arrived, so only a
+# byte-identical copy matches: a re-encode or a trimmed file counts as new.
+lp_dedup_registry() { printf '%s\n' "$LECTURE_ROOT/.state/audio-sha256.tsv"; }
+
+# lp_sha256 FILE -> the hex digest. Read from stdin so odd names are not escaped.
+lp_sha256() { local h; h="$(sha256sum < "$1")" || return 1; printf '%s\n' "${h%% *}"; }
+
+# lp_dedup_find HASH -> the newest registry row for HASH, or nothing.
+lp_dedup_find() {
+  awk -F'\t' -v h="$1" '$1 == h { row = $0 } END { if (row != "") print row }' \
+    "$(lp_dedup_registry)" 2>/dev/null || true
+}
+
+# Run "$@" with the registry locked, so a check and its new row are one step and a
+# hand-run lecture-transcribe cannot race the watcher into the same recording.
+_lp_dedup_locked() {
+  local reg fd rc; reg="$(lp_dedup_registry)"
+  mkdir -p "${reg%/*}"
+  exec {fd}>"$reg.lock"; flock "$fd"
+  [[ -s "$reg" ]] || printf '# sha256\tname\tintake\twhere\n' > "$reg"
+  "$@"; rc=$?
+  exec {fd}>&-
+  return "$rc"
+}
+_lp_dedup_claim() {
+  local hit; hit="$(lp_dedup_find "$1")"
+  if [[ -n "$hit" && "$LECTURE_DEDUP" != off && -z "${4:-}" ]]; then printf '%s\n' "$hit"; return 1; fi
+  printf '%s\t%s\t%s\t%s\n' "$1" "${2//$'\t'/ }" "$3" "${5:--}" >> "$(lp_dedup_registry)"
+}
+# lp_dedup_claim HASH NAME INTAKE [FORCE] [WHERE] -> status 0 and a new row, or status 1
+# and the earlier row on stdout. A non-empty FORCE (or LECTURE_DEDUP=off) adds the row
+# even when the hash is known.
+lp_dedup_claim() { _lp_dedup_locked _lp_dedup_claim "$@"; }
+
+_lp_dedup_set() {
+  local reg tmp; reg="$(lp_dedup_registry)"; tmp="$reg.tmp.$$"
+  awk -F'\t' -v OFS='\t' -v h="$1" -v t="$2" -v w="$3" '
+    $1 == h && $3 == t { if (w == "") next; $4 = w } { print }' "$reg" > "$tmp" && mv -f "$tmp" "$reg"
+}
+# lp_dedup_set HASH INTAKE WHERE -> fill in where the claimed row went. An empty
+# WHERE drops the row again (the run failed, so the recording was not taken in).
+lp_dedup_set() { _lp_dedup_locked _lp_dedup_set "$@"; }
+
+_lp_dedup_drop() {
+  local reg tmp; reg="$(lp_dedup_registry)"; tmp="$reg.tmp.$$"
+  awk -F'\t' -v ks="$(printf '%s\n' "$@")" 'BEGIN { n = split(ks, a, "\n"); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
+    !($1 in drop) && !($4 in drop) { print }' "$reg" > "$tmp" && mv -f "$tmp" "$reg"
+}
+# lp_dedup_drop KEY... -> forget the rows whose hash or "where" path is one of KEY, so
+# those recordings count as new again. lecture-forget uses the paths.
+lp_dedup_drop() {
+  [[ $# -gt 0 && -f "$(lp_dedup_registry)" ]] || return 0
+  _lp_dedup_locked _lp_dedup_drop "$@"
+}
 
 # Which notes engine would run right now: cmd, local or off. Sets LECTURE_NOTES_CMD
 # when a CLI is auto-detected.

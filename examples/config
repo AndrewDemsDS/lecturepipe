@@ -54,5 +54,8 @@ LECTURE_LLM=""
 # re-listening; pick a number you can justify (see docs/privacy.md).
 LECTURE_AUDIO_RETENTION_DAYS=""
 
+# Skip a recording whose bytes were already transcribed (README, "Duplicate recordings").
+#LECTURE_DEDUP=on
+
 # lecture-quiet (AMD only): the DRM card whose clocks to cap, e.g. /sys/class/drm/card1/device
 LECTURE_GPU_CARD=""

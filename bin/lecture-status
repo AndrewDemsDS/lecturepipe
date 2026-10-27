@@ -63,4 +63,6 @@ done < <(find -L "$ROOT/transcripts" -name '*.md' -printf '%T@ %p\n' 2>/dev/null
 
 fails=$(find "$ROOT/inbox" -name '*.failed' 2>/dev/null | wc -l)
 [[ "$fails" -gt 0 ]] && echo "${red}${bold}$fails failed file(s)${off}, see $ROOT/.state/watch.log"
+dups=$(find "$ROOT/.state/duplicates" -type f 2>/dev/null | wc -l)
+[[ "$dups" -gt 0 ]] && echo "${ylw}$dups duplicate recording(s)${off} set aside in $ROOT/.state/duplicates, see $ROOT/.state/watch.log"
 exit 0
