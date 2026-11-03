@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# File a transcribed lecture into its course folder in the notes vault:
+# File a transcribed session into its course folder in the notes vault:
 #   $LECTURE_NOTES_ROOT/<CODE Title>/lectures/NN/  <- .md, .srt, .txt, .json, audio
-# Symlinks stay behind in $LECTURE_ROOT/{transcripts,audio}/<CODE>/ so the index,
-# status and note re-runs keep working.
+# Labs go to labs/NN/ and recitations to recitations/NN/, by the kind token in the
+# file name (lp_session in lib/common.sh). Symlinks stay behind in
+# $LECTURE_ROOT/{transcripts,audio}/<CODE>/ so the index, status and note re-runs keep working.
 #
 #   lecture-file <note.md> [NN]
-# NN comes from the argument, else from "lecture-N" in the file name, else the
-# lecture goes to lectures/<date>/ to be sorted by hand.
+# NN comes from the argument, else from "lecture-N", "lab-N" or "recitation-N" in the
+# file name, else the session goes to <kind folder>/<date>/ to be sorted by hand.
 # With LECTURE_NOTES_ROOT unset this does nothing.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -27,13 +28,14 @@ SRCDIR="$(dirname "$NOTE")"
 CDIR="$(lp_vault_course_dir "$COURSE")"
 [[ -n "$CDIR" ]] || { echo "  ! no single course folder for $COURSE in $LECTURE_NOTES_ROOT (\"$COURSE Title\" or \"title_${COURSE,,}\"); not filed" >&2; exit 1; }
 
-NN="${2:-}"
-[[ -n "$NN" ]] || NN="$(lp_lecture_number "$STEM")"
+IFS=$'\t' read -r KIND NN <<< "$(lp_session "$STEM")"
+KDIR="$(lp_kind_dir "$KIND")"
+NN="${2:-$NN}"
 if [[ -n "$NN" ]]; then
-  DEST="$CDIR/lectures/$(printf '%02d' "$((10#$NN))")"
+  DEST="$CDIR/$KDIR/$(printf '%02d' "$((10#$NN))")"
 else
-  DEST="$CDIR/lectures/$DATE"
-  echo "  ! no lecture number in the name; filing under lectures/$DATE"
+  DEST="$CDIR/$KDIR/$DATE"
+  echo "  ! no $KIND number in the name; filing under $KDIR/$DATE"
 fi
 mkdir -p "$DEST"
 

@@ -57,7 +57,7 @@ while IFS= read -r note; do
   if [[ "$LIST" == 1 ]]; then echo "$note"; continue; fi
   echo "▶ $note"
   if lecture-notes "$note"; then done_n=$((done_n+1)); fi
-done < <(find "${roots[@]}" -path '*/lectures/*' -name '*.md' -not -path '*/.state/*' 2>/dev/null; find "$LECTURE_ROOT/transcripts" -maxdepth 2 -name '*.md' -not -type l 2>/dev/null)
+done < <(find "${roots[@]}" \( -path '*/lectures/*' -o -path '*/labs/*' -o -path '*/recitations/*' \) -name '*.md' -not -path '*/.state/*' 2>/dev/null; find "$LECTURE_ROOT/transcripts" -maxdepth 2 -name '*.md' -not -type l 2>/dev/null)
 [[ "$LIST" == 1 ]] && { echo "$n pending"; exit 0; }
 [[ "$n" -gt 0 ]] && { lecture-index >/dev/null 2>&1 || true; echo "notes written for $done_n of $n pending note(s)"; }
 exit 0

@@ -17,6 +17,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import session  # noqa: E402
+
 CHUNK_WORDS = 3500
 
 PROMPTS = {
@@ -25,7 +28,7 @@ PROMPTS = {
                   "ονόματα βιβλιοθηκών, εντολές και ακρωνύμια. Μην εφευρίσκεις τίποτα που δεν "
                   "λέγεται στο κείμενο. Το κείμενο είναι αυτόματη απομαγνητοφώνηση και μπορεί να "
                   "έχει λάθη. Διόρθωσε προφανή λάθη αναγνώρισης σε γνωστούς όρους."),
-        "map": """Είσαι βοηθός μελέτης. Παρακάτω είναι ΜΕΡΟΣ {i} από {n} της απομαγνητοφώνησης μιας πανεπιστημιακής διάλεξης ({course}).
+        "map": """Είσαι βοηθός μελέτης. Παρακάτω είναι ΜΕΡΟΣ {i} από {n} της απομαγνητοφώνησης {session} ({course}).{focus}
 
 {rules}
 
@@ -37,7 +40,7 @@ PROMPTS = {
 
 ΚΕΙΜΕΝΟ:
 {chunk}""",
-        "reduce": """Έχεις τις σημειώσεις ανά τμήμα μιας διάλεξης ({course}, {date}). Συνένωσέ τες σε ΕΝΑ καθαρό σημείωμα μελέτης.
+        "reduce": """Έχεις τις σημειώσεις ανά τμήμα {session_short} ({course}, {date}). Συνένωσέ τες σε ΕΝΑ καθαρό σημείωμα μελέτης.{focus}
 
 {rules}
 
@@ -65,12 +68,20 @@ PROMPTS = {
 ΣΗΜΕΙΩΣΕΙΣ ΑΝΑ ΤΜΗΜΑ:
 {notes}""",
         "heading": "## Σημειώσεις",
+        # kind: (map phrase, reduce phrase, focus line)
+        "kinds": {
+            "lecture": ("μιας πανεπιστημιακής διάλεξης", "μιας διάλεξης", ""),
+            "lab": ("ενός πανεπιστημιακού εργαστηρίου", "ενός εργαστηρίου",
+                    "Πρόκειται για ΕΡΓΑΣΤΗΡΙΟ: δώσε βάρος στα βήματα, τις εντολές και τη ρύθμιση."),
+            "recitation": ("ενός πανεπιστημιακού φροντιστηρίου", "ενός φροντιστηρίου",
+                           "Πρόκειται για ΦΡΟΝΤΙΣΤΗΡΙΟ: δώσε βάρος στις ασκήσεις που λύθηκαν και τις λύσεις τους."),
+        },
     },
     "en": {
         "rules": ("Keep technical terms, library names, commands and acronyms exactly as they "
                   "are. Do not invent anything the text does not say. The text is an automatic "
                   "transcript and may contain errors. Fix obvious recognition errors in known terms."),
-        "map": """You are a study assistant. Below is PART {i} of {n} of the transcript of a university lecture ({course}).
+        "map": """You are a study assistant. Below is PART {i} of {n} of the transcript of a university {session} ({course}).{focus}
 
 {rules}
 
@@ -82,7 +93,7 @@ Give, briefly:
 
 TEXT:
 {chunk}""",
-        "reduce": """You have per-part notes of one lecture ({course}, {date}). Merge them into ONE clean study note.
+        "reduce": """You have per-part notes of one {session_short} ({course}, {date}). Merge them into ONE clean study note.{focus}
 
 {rules}
 
@@ -110,6 +121,13 @@ Assignments, dates, exam scope. Write "None" if nothing was mentioned.
 PER-PART NOTES:
 {notes}""",
         "heading": "## Notes",
+        "kinds": {
+            "lecture": ("lecture", "lecture", ""),
+            "lab": ("lab session", "lab session",
+                    "This is a LAB: put the weight on the steps, commands and setup."),
+            "recitation": ("recitation", "recitation",
+                           "This is a RECITATION: put the weight on the worked problems and their solutions."),
+        },
     },
 }
 
@@ -198,6 +216,8 @@ def main():
     course, date = fm.get("course", "?"), fm.get("date", "?")
     lang = fm.get("language", "en").split("-")[0]
     P = PROMPTS.get(lang, PROMPTS["en"])
+    phrase, phrase_short, focus = P["kinds"][session.parse(os.path.basename(a.note)[:-3])[0]]
+    kw = {"session": phrase, "session_short": phrase_short, "focus": "\n" + focus if focus else ""}
 
     body = doc.split("## Transcript", 1)[1] if "## Transcript" in doc else doc
     transcript = re.sub(r"\*\*\[(\d\d:\d\d:\d\d)\]\*\*", r"[\1]", body).strip()
@@ -212,11 +232,11 @@ def main():
         per = []
         for i, c in enumerate(parts, 1):
             print(f"    chunk {i}/{len(parts)}…", flush=True)
-            per.append(srv.ask(P["map"].format(i=i, n=len(parts), course=course,
+            per.append(srv.ask(P["map"].format(i=i, n=len(parts), course=course, **kw,
                                                rules=P["rules"], chunk=c)))
         joined = per[0] if len(per) == 1 else "\n\n---\n\n".join(per)
         print("    synthesising…", flush=True)
-        notes = srv.ask(P["reduce"].format(course=course, date=date,
+        notes = srv.ask(P["reduce"].format(course=course, date=date, **kw,
                                            rules=P["rules"], notes=joined), max_tokens=2500)
 
     notes = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", notes.strip())

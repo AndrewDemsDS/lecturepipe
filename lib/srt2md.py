@@ -6,7 +6,10 @@ regroups cues into paragraphs at sentence boundaries or after a long pause,
 and stamps each paragraph with the time it starts so you can jump back to
 the audio.
 """
-import argparse, collections, re, datetime
+import argparse, collections, re, datetime, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import session  # noqa: E402
 
 CUE = re.compile(r"^(\d+)\s*$")
 TIMING = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
@@ -72,7 +75,13 @@ def main():
                          f'({ratio:.0%}) — likely a decoder loop; re-run this lecture"')
             print(f"  !! REPETITION LOOP: {n}/{len(texts)} segments ({ratio:.0%}) are "
                   f"{top[:60]!r}", flush=True)
-    title = a.title.replace("-", " ").replace("_", " ").strip() or "Lecture"
+    kind, num = session.parse(os.path.basename(a.out).rsplit(".", 1)[0])
+    title = a.title.replace("-", " ").replace("_", " ").strip() or kind.capitalize()
+    # A lab or recitation says so in the heading; a lecture heading stays as it was.
+    heading = f"{a.course} {a.date}"
+    if kind != "lecture":
+        label = kind.capitalize() + (f" {num}" if num is not None else "")
+        heading = f"{a.course} {label} {a.date}"
 
     fm = [
         "---",
@@ -85,12 +94,12 @@ def main():
         f"asr_model: whisper-large-v3{'-turbo' if a.model=='turbo' else ''}",
         f'audio: "{a.source}"',
         f"transcribed: {datetime.date.today().isoformat()}",
-        "tags: [lecture, transcript]",
+        f"tags: [{kind}, transcript]",
         *([loop_note] if loop_note else []),
         "notes_status: pending",
         "---",
         "",
-        f"# {a.course} {a.date}",
+        f"# {heading}",
         "",
         "<!-- LECTURE-NOTES-START -->",
         "<!-- LECTURE-NOTES-END -->",

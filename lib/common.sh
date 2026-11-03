@@ -124,9 +124,34 @@ w.writeframes(bytes(64000)); w.close()' "$tmp/silence.wav" 2>/dev/null \
   echo "$n"
 }
 
-# Lecture number from a file stem: "lecture-7-awk" -> 7. Empty when absent.
-lp_lecture_number() {
-  printf '%s' "$1" | grep -oiE '(lecture|lec|dialexi)[-_ ]?[0-9]{1,2}' | grep -oE '[0-9]+$' | head -1 || true
+# Session kind and number from a file stem, the naming contract shared with lib/session.py
+# and the phone app: "lab-3-awk" -> lab 3. Tokens (any case): lecture, lec, dialexi;
+# lab, ergastirio; recitation, frontistirio. A token is not glued to a letter and may
+# carry "-", "_" or space and a 1 to 2 digit number. The first token decides the kind,
+# the number is the first one after a token of that kind. No token: a lecture.
+LP_SESSION_RE='(^|[^[:alpha:]])(lecture|lec|dialexi|lab|ergastirio|recitation|frontistirio)([-_ ]?([0-9]{1,2}))?([^[:alpha:]]|$)'
+
+# lp_session STEM -> "kind<TAB>number", the number empty when absent.
+lp_session() {
+  local s="${1,,}" kind="" num="" k m tok
+  while [[ -n "$s" && "$s" =~ $LP_SESSION_RE ]]; do
+    m="${BASH_REMATCH[0]}"; tok="${BASH_REMATCH[2]}"
+    case "$tok" in
+      lab|ergastirio) k=lab ;;
+      recitation|frontistirio) k=recitation ;;
+      *) k=lecture ;;
+    esac
+    [[ -n "$kind" ]] || kind="$k"
+    # The number again from the match itself: glibc may split "lab_04" as "0" plus a "4" boundary.
+    if [[ "$k" == "$kind" && "${m#*"$tok"}" =~ ^[-_\ ]?([0-9]{1,2}) ]]; then num="${BASH_REMATCH[1]}"; break; fi
+    s="${s#*"$m"}"
+  done
+  printf '%s\t%s\n' "${kind:-lecture}" "$num"
+}
+
+# lp_kind_dir KIND -> the vault folder for that kind: lectures, labs or recitations.
+lp_kind_dir() {
+  case "$1" in lab) echo labs ;; recitation) echo recitations ;; *) echo lectures ;; esac
 }
 
 # The vault folder for COURSE, or nothing unless exactly one matches. A folder belongs to

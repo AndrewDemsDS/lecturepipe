@@ -70,4 +70,7 @@ read the first few sets of notes against the transcript before trusting them.
 `lib/prompts/notes.<lang>.md` is chosen by the course language (`el`, `en`, fallback
 `en`). Copy one to add a language. Placeholders: `{{COURSE}}`, `{{DATE}}`,
 `{{TRANSCRIPT}}`, and the `<!-- section:... -->` blocks that are only included when
-slides or sibling recordings exist.
+slides or sibling recordings exist. `{{SESSION}}` names the session in the first line
+(sections `session_lecture`, `session_lab`, `session_recitation`) and `{{KIND_FOCUS}}`
+adds one line for a lab or a recitation (`focus_lab`, `focus_recitation`); a lecture
+gets no focus line. A copied template needs these sections too.

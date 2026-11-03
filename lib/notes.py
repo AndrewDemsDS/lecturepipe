@@ -17,6 +17,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import session  # noqa: E402
 MARK_START = "<!-- LECTURE-NOTES-START -->"
 MARK_END = "<!-- LECTURE-NOTES-END -->"
 
@@ -77,19 +79,18 @@ def lecture_dir(note_path, course, notes_root):
         return sdir
     if not notes_root:
         return None
-    stem = os.path.basename(note_path)[:-3]
-    m = re.search(r"(?i)(lecture|lec|dialexi)[-_ ]?(\d{1,2})", stem)
-    if not m:
+    kind, num = session.parse(os.path.basename(note_path)[:-3])
+    if num is None:
         return None
     cands = course_dirs(notes_root, course)
     if len(cands) != 1:
         return None
-    return os.path.join(cands[0], "lectures", f"{int(m.group(2)):02d}")
+    return os.path.join(cands[0], session.DIRS[kind], f"{num:02d}")
 
 
 def siblings(note_path, sdir, notes_root):
     """Other transcripts of the same lecture: (date, title, duration, outline_lines)."""
-    if not sdir or not notes_root or "/lectures/" not in sdir + "/":
+    if not sdir or not notes_root or not any(f"/{d}/" in sdir + "/" for d in session.DIRS.values()):
         return []
     out = []
     me = os.path.realpath(note_path)
@@ -171,6 +172,7 @@ def cmd_prompt(args):
 
     sdir = lecture_dir(args.note, course, notes_root)
     tag = "cmd"
+    kind, _ = session.parse(os.path.basename(args.note)[:-3])
 
     sib = siblings(args.note, sdir, notes_root)
     siblings_block = ""
@@ -206,7 +208,9 @@ def cmd_prompt(args):
             print(f"  slides: {len(pdfs)} pdf, {text.count('=== page')} pages with text")
 
     body = strip_sections(template)
-    prompt = (body.replace("{{COURSE}}", course).replace("{{DATE}}", date)
+    prompt = (body.replace("{{SESSION}}", section(template, f"session_{kind}"))
+              .replace("{{KIND_FOCUS}}", section(template, f"focus_{kind}"))
+              .replace("{{COURSE}}", course).replace("{{DATE}}", date)
               .replace("{{SLIDES_RULES}}", slides_rules)
               .replace("{{SIBLINGS_BLOCK}}", siblings_block)
               .replace("{{SLIDES_SECTIONS}}", slides_sections)

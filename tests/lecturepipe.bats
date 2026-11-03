@@ -844,3 +844,119 @@ registry_rows() { grep -vc '^#' "$LECTURE_ROOT/.state/audio-sha256.tsv" || true;
   ! grep -q 'gone' "$LECTURE_ROOT/.state/audio-sha256.tsv"
   grep -q 'keep' "$LECTURE_ROOT/.state/audio-sha256.tsv"
 }
+
+@test "session kind and number: every token, Greek transliterations, no token, topic words" {
+  source "$REPO/lib/common.sh"
+  cases=(
+    "2026-10-19_lecture-7-routing|lecture|7"
+    "NET301_2026-10-19_LEC_3|lecture|3"
+    "dialexi 12 intro|lecture|12"
+    "lecture-123|lecture|12"
+    "2026-10-19_lab-3-sockets|lab|3"
+    "Lab_04|lab|04"
+    "ergastirio5|lab|5"
+    "2026-10-19_recitation-2|recitation|2"
+    "FRONTISTIRIO 11|recitation|11"
+    "2026-10-19_routing-protocols|lecture|"
+    "2026-10-19_lab-intro|lab|"
+    "syllabus-and-labels-lecture-2|lecture|2"
+    "collaboration-lab-3|lab|3"
+    "routing-lab-3-lecture-4|lab|3"
+    "lecture-intro-lec-5|lecture|5"
+    "lectures-7|lecture|"
+    "rec-3|lecture|"
+  )
+  for c in "${cases[@]}"; do
+    IFS='|' read -r stem kind num <<< "$c"
+    [ "$(lp_session "$stem")" = "$kind"$'\t'"$num" ] || { echo "bash: $stem -> $(lp_session "$stem")"; false; }
+    py="$(python3 -I -c "import sys; sys.path.insert(0, '$REPO/lib'); import session
+k, n = session.parse(sys.argv[1]); print(k + '\t' + ('' if n is None else str(n)))" "$stem")"
+    [ "$py" = "$kind"$'\t'"${num:+$((10#$num))}" ] || { echo "python: $stem -> $py"; false; }
+  done
+  [ "$(lp_kind_dir lab)" = labs ] && [ "$(lp_kind_dir recitation)" = recitations ] && [ "$(lp_kind_dir lecture)" = lectures ]
+}
+
+@test "lecture-file files labs and recitations into their own folders, lectures as before" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  C="$LECTURE_NOTES_ROOT/NET301 Computer Networks"
+  mkdir -p "$C" "$LECTURE_ROOT/transcripts/NET301"
+  for stem in 2026-10-19_lab-3-sockets 2026-10-20_recitation-2-subnetting 2026-10-21_lab-intro \
+    2026-10-22_lecture-7-routing 2026-10-23_routing-lab-4-lecture-5; do
+    mknote "$LECTURE_ROOT/transcripts/NET301/$stem.md" NET301 en
+    run lecture-file "$LECTURE_ROOT/transcripts/NET301/$stem.md"
+    [ "$status" -eq 0 ]
+  done
+  [ -f "$C/labs/03/2026-10-19_lab-3-sockets.md" ]
+  [ -f "$C/recitations/02/2026-10-20_recitation-2-subnetting.md" ]
+  [ -f "$C/labs/2026-10-19/2026-10-21_lab-intro.md" ]       # no number: the note's date
+  [ -f "$C/lectures/07/2026-10-22_lecture-7-routing.md" ]
+  [ -f "$C/labs/04/2026-10-23_routing-lab-4-lecture-5.md" ]
+  [ -L "$LECTURE_ROOT/transcripts/NET301/2026-10-19_lab-3-sockets.md" ]
+  [ ! -e "$C/lectures/03" ] && [ ! -e "$C/lectures/02" ]
+  mknote "$LECTURE_ROOT/transcripts/NET301/2026-10-24_lab-x.md" NET301 en
+  run lecture-file "$LECTURE_ROOT/transcripts/NET301/2026-10-24_lab-x.md" 9
+  [ -f "$C/labs/09/2026-10-24_lab-x.md" ]
+}
+
+@test "a lab note says so in the heading, tags and notes prompt; a lecture prompt does not" {
+  L="$BATS_TEST_TMPDIR/2026-10-19_lab-3-sockets.md"; mknote "$L" NET301 en
+  grep -q '^# NET301 Lab 3 2026-10-19$' "$L"
+  grep -q '^tags: \[lab, transcript\]$' "$L"
+  python3 -I "$REPO/lib/notes.py" prompt "$L" --out "$BATS_TEST_TMPDIR/p.txt"
+  run cat "$BATS_TEST_TMPDIR/p.txt"
+  [[ "$output" == *"university"$'\n'"lab session (NET301, 2026-10-19)."* ]]
+  [[ "$output" == *"steps, commands and setup"* ]]
+  [[ "$output" != *"{{"* ]]
+  R="$BATS_TEST_TMPDIR/2026-10-19_frontistirio-2.md"; mknote "$R" NET301 el
+  grep -q '^# NET301 Recitation 2 2026-10-19$' "$R"
+  python3 -I "$REPO/lib/notes.py" prompt "$R" --out "$BATS_TEST_TMPDIR/r.txt"
+  grep -q 'πανεπιστημιακού φροντιστηρίου (NET301' "$BATS_TEST_TMPDIR/r.txt"
+  grep -q 'ΦΡΟΝΤΙΣΤΗΡΙΟ' "$BATS_TEST_TMPDIR/r.txt"
+  N="$BATS_TEST_TMPDIR/2026-10-19_lecture-7.md"; mknote "$N" NET301 en
+  grep -q '^# NET301 2026-10-19$' "$N"
+  grep -q '^tags: \[lecture, transcript\]$' "$N"
+  python3 -I "$REPO/lib/notes.py" prompt "$N" --out "$BATS_TEST_TMPDIR/n.txt"
+  run cat "$BATS_TEST_TMPDIR/n.txt"
+  [[ "$output" == *"university"$'\n'"lecture (NET301, 2026-10-19)."$'\n\n'"CRITICAL:"* ]]
+  [[ "$output" != *"LAB"* && "$output" != *"RECITATION"* ]]
+}
+
+@test "notes prompt finds the deck and siblings in a labs folder" {
+  command -v pdftotext >/dev/null || skip "pdftotext missing"
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  D="$LECTURE_NOTES_ROOT/NET301 Computer Networks/labs/03"; mkdir -p "$D"
+  cp "$REPO/tests/fixtures/slides.pdf" "$D/03.pdf"
+  mknote "$D/2026-10-12_lab-3-part-one.md" NET301 en
+  N="$LECTURE_ROOT/2026-10-19_lab-3-part-two.md"; mknote "$N" NET301 en
+  python3 -I "$REPO/lib/notes.py" prompt "$N" --out "$BATS_TEST_TMPDIR/p.txt"
+  grep -q '##### 03.pdf' "$BATS_TEST_TMPDIR/p.txt"
+  mv "$N" "$D/"
+  python3 -I "$REPO/lib/notes.py" prompt "$D/${N##*/}" --out "$BATS_TEST_TMPDIR/p.txt"
+  grep -q 'there are 1 more' "$BATS_TEST_TMPDIR/p.txt"
+}
+
+@test "lecture-record --lab and --recitation put the kind and number in the name" {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin"
+  printf '#!/usr/bin/env bash\nprintf x > "${@: -1}"\n' > "$BATS_TEST_TMPDIR/fakebin/ffmpeg"
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/ffmpeg"
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio --lab 3 net301 "Sockets"
+  [ "$status" -eq 0 ]
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_lab-03-sockets.flac" ]
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --recitation 12 --keep-audio net301
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_recitation-12.flac" ]
+  PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio --lab net301 "intro"
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_lab-intro.flac" ]
+  source "$REPO/lib/common.sh"
+  [ "$(lp_session "NET301_$(date +%F)_lab-03-sockets")" = $'lab\t03' ]
+}
+
+@test "lecture-pending finds pending notes in labs and recitations" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  C="$LECTURE_NOTES_ROOT/networks_net301"; mkdir -p "$C/labs/03" "$C/recitations/02" "$LECTURE_ROOT/transcripts"
+  mknote "$C/labs/03/2026-10-19_lab-3.md" NET301 en
+  mknote "$C/recitations/02/2026-10-20_recitation-2.md" NET301 en
+  run lecture-pending --list
+  [[ "$output" == *"lab-3.md"* ]]
+  [[ "$output" == *"recitation-2.md"* ]]
+  [[ "$output" == *"2 pending"* ]]
+}

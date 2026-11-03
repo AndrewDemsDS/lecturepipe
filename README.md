@@ -88,8 +88,19 @@ default.
 lecture-status            # recording? queued? transcribing? which engine? last 5 lectures
 ```
 
+Labs and recitations go through the same pipeline and are filed in their own folders:
+
+```sh
+lecture-record --lab 3 NET301 "sockets"           # NET301_<date>_lab-03-sockets
+lecture-record --recitation 2 NET301              # NET301_<date>_recitation-02
+```
+
+The number is optional (`--lab NET301`), and `--lecture 7` numbers a lecture the same way.
+
 Not recorded by you? Drop any file ffmpeg reads into `~/lectures/inbox/`, named
 `COURSE_YYYY-MM-DD_topic.ext`. Course and date come from the name, with sensible fallbacks.
+Put `lab-3` or `recitation-3` in the topic to mark the kind (see
+[Filing](#filing-into-a-notes-vault)).
 
 Online lecture? Record what the laptop plays instead of the room: `lecture-setup` lists
 the `.monitor` sources, or set `LECTURE_MIC` to one for a single run.
@@ -158,7 +169,23 @@ With a vault configured, a finished lecture moves to
 `<vault>/<CODE Title>/lectures/NN/` (for example `NET301 Computer Networks/lectures/07/`, older
 `<title>_<code>` folders still match) and symlinks are left behind so the index and
 status keep working. `NN` comes from `lecture-N` in the recording name; without one, the
-lecture goes under `lectures/<date>/` for you to sort. Slide PDFs already in that folder are
+lecture goes under `lectures/<date>/` for you to sort.
+
+Labs and recitations work the same way in `labs/NN/` and `recitations/NN/`, numbered
+separately. The kind comes from the first of these words in the recording name, upper or
+lower case, with an optional `-`, `_` or space before a 1 or 2 digit number:
+
+| Kind | Words | Folder |
+|---|---|---|
+| lecture | `lecture`, `lec`, `dialexi` | `lectures/NN/` |
+| lab | `lab`, `ergastirio` | `labs/NN/` |
+| recitation | `recitation`, `frontistirio` | `recitations/NN/` |
+
+A word only counts on its own: `syllabus` or `collaboration` is not a lab. A name with none
+of them is a lecture, so older names file as before. The number is the first one written
+after a word of the same kind, so `routing-lab-4-lecture-5` is lab 4. The notes pass is told
+the kind and asks for steps, commands and setup in a lab, and for the worked problems and
+their solutions in a recitation. Slide PDFs already in that folder are
 used by the notes pass, so download the deck before the recording ends. A PDF named after
 the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extra reading.
 
@@ -191,6 +218,7 @@ or drop it from the list with `lecture-dedup --forget FILE` and queue it as usua
 | `lecture-setup` | Configuration wizard. `--defaults` for scripts. |
 | `lecture-record COURSE ["topic"]` | Live transcription, no audio kept. Ctrl-C to stop. |
 | `lecture-record --keep-audio COURSE ["topic"]` | Record a FLAC into the inbox for later. |
+| `lecture-record --lab [NN] \| --recitation [NN] COURSE ["topic"]` | Mark a lab or a recitation. Combines with the options above. |
 | `lecture-forget NOTE.md \| --course CODE [--audio]` | Erase a lecture and everything derived from it. |
 | `lecture-retention [--dry-run]` | Delete audio older than `LECTURE_AUDIO_RETENTION_DAYS`. |
 | `lecture-transcribe FILE [-m turbo] [--no-notes] [--force]` | Process one file by hand. `--force` transcribes a duplicate anyway. |
@@ -198,7 +226,7 @@ or drop it from the list with `lecture-dedup --forget FILE` and queue it as usua
 | `lecture-watch` | Drain the inbox now. |
 | `lecture-pending [--list]` | Notes for transcripts that arrived without them (phone app, failed runs). Also moves finished recordings the phone app uploaded to `.lecturepipe-inbox/` in the notes vault into `inbox/`. Runs every 15 min from a timer. |
 | `lecture-dedup FILE \| --backfill \| --forget FILE \| --list` | Was this recording taken in before; hash the archive once; let a file be queued again. |
-| `lecture-file NOTE.md [NN]` | File into the vault by hand, or fix a lecture number. |
+| `lecture-file NOTE.md [NN]` | File into the vault by hand, or fix a lecture, lab or recitation number. |
 | `lecture-index` | Rebuild `INDEX.md`. |
 | `lecture-status` | What is happening. |
 | `lecture-later [--quiet] CMD...` | Run a job once no recording is in progress. |

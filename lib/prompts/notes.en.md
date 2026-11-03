@@ -1,5 +1,6 @@
 You are a study assistant. Below is the COMPLETE automatic transcript of a university
-lecture ({{COURSE}}, {{DATE}}).
+{{SESSION}} ({{COURSE}}, {{DATE}}).
+{{KIND_FOCUS}}
 
 CRITICAL:
 1. The text contains RECOGNITION ERRORS. Recover the real terms from context (for
@@ -95,3 +96,17 @@ and after the break, or another day on the same slides). This recording is PART 
 The other recordings and their topics (where notes already exist):
 {{SIBLINGS_LIST}}
 <!-- /section:siblings -->
+
+<!-- section:session_lecture -->lecture<!-- /section:session_lecture -->
+<!-- section:session_lab -->lab session<!-- /section:session_lab -->
+<!-- section:session_recitation -->recitation<!-- /section:session_recitation -->
+
+<!-- section:focus_lab -->
+This is a LAB: put the weight on the steps, commands and setup, in the order they were
+done, so the lab can be repeated from the notes.
+<!-- /section:focus_lab -->
+
+<!-- section:focus_recitation -->
+This is a RECITATION: put the weight on the worked problems, each with its statement,
+the solution steps and the result.
+<!-- /section:focus_recitation -->
