@@ -11,18 +11,23 @@
 # llama-server engine runs; with no model either, notes are skipped.
 #
 # Delete the "notes_status: done" line in the note to regenerate.
-# LECTURE_NOTES_SLIDES=off writes notes from the transcript alone.
+# LECTURE_NOTES_SLIDES=off writes notes from the transcript alone. A course with
+# notes=off in courses.conf gets none.
 set -uo pipefail
 # shellcheck source=../lib/common.sh
 source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 
 NOTE="${1:-}"
-[[ -f "$NOTE" ]] || { sed -n '2,14p' "$0"; exit 2; }
+[[ -f "$NOTE" ]] || { sed -n '2,15p' "$0"; exit 2; }
 shift
 
 grep -q "LECTURE-NOTES-START" "$NOTE" || { echo "no LECTURE-NOTES markers in $NOTE" >&2; exit 2; }
 if grep -q "^notes_status: done" "$NOTE"; then
   echo "  notes already written, skipping (delete the notes_status line to redo)"; exit 0
+fi
+COURSE="$(grep -m1 '^course:' "$NOTE" | awk '{print $2}')"
+if lp_notes_off "$COURSE"; then
+  echo "  notes are off for ${COURSE:-this course} in courses.conf, transcript only"; exit 0
 fi
 WORDS="$(grep -m1 '^words:' "$NOTE" | awk '{print $2}')"
 [[ "${WORDS:-0}" -ge 120 ]] || { echo "  transcript too short for notes, skipping"; exit 0; }

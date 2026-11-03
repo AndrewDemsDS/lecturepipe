@@ -8,6 +8,8 @@
 #   lecture-file <note.md> [NN]
 # NN comes from the argument, else from "lecture-N", "lab-N" or "recitation-N" in the
 # file name, else the session goes to <kind folder>/<date>/ to be sorted by hand.
+# A session whose names are already taken in that folder (a second unnumbered lab
+# of the day, say) is filed as <name>-take<N>, never over the first one.
 # With LECTURE_NOTES_ROOT unset this does nothing.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
@@ -39,19 +41,32 @@ else
 fi
 mkdir -p "$DEST"
 
-move() {  # move $1 into $DEST and leave a symlink behind
-  local src="$1" dst
-  dst="$DEST/$(basename "$1")"
+HAS_AUDIO=""; [[ -n "$AUDIO" && -f "$AUDIO" && ! -L "$AUDIO" ]] && HAS_AUDIO=1
+ABASE="$(basename "$AUDIO")"; ASTEM="${ABASE%.*}"; AEXT="${ABASE##*.}"
+# A take is free when none of the files this filing would write is there yet.
+SUFFIX=""
+dest_taken() {
+  local sfx="${1#"$STEM"}" ext
+  for ext in md srt txt json; do [[ -e "$DEST/$STEM$sfx.$ext" || -L "$DEST/$STEM$sfx.$ext" ]] && return 0; done
+  [[ -n "$HAS_AUDIO" && ( -e "$DEST/$ASTEM$sfx.$AEXT" || -L "$DEST/$ASTEM$sfx.$AEXT" ) ]]
+}
+SUFFIX="$(lp_take_name "$STEM" dest_taken)"; SUFFIX="${SUFFIX#"$STEM"}"
+[[ -z "$SUFFIX" ]] || echo "  ! $KDIR/${DEST##*/} already holds $STEM, filing this one as $STEM$SUFFIX"
+
+move() {  # move $1 into $DEST as $2 and leave a symlink behind
+  local src="$1" dst="$DEST/$2"
   [[ -e "$src" && ! -L "$src" ]] || return 0
-  if [[ -e "$dst" ]]; then echo "  ! exists, left in place: $dst" >&2; return 0; fi
-  mv "$src" "$dst" && ln -s "$dst" "$src"
+  if mv -n "$src" "$dst" && [[ ! -e "$src" ]]; then ln -s "$dst" "$src"; else echo "  ! could not move $src" >&2; fi
 }
 
-for ext in srt txt json; do move "$SRCDIR/$STEM.$ext"; done
-if [[ -n "$AUDIO" && -f "$AUDIO" && ! -L "$AUDIO" ]]; then
-  move "$AUDIO"
-  sed -i -E "s|^audio:.*|audio: \"$DEST/$(basename "$AUDIO")\"|" "$NOTE"
+for ext in srt txt json; do move "$SRCDIR/$STEM.$ext" "$STEM$SUFFIX.$ext"; done
+if [[ -n "$HAS_AUDIO" ]]; then
+  move "$AUDIO" "$ASTEM$SUFFIX.$AEXT"
+  sed -i -E "s|^audio:.*|audio: \"$DEST/$ASTEM$SUFFIX.$AEXT\"|" "$NOTE"
 fi
-move "$NOTE"
+move "$NOTE" "$STEM$SUFFIX.md"
+if [[ ! -L "$NOTE" ]]; then
+  echo "  ✖ not filed: could not move $NOTE to $DEST/$STEM$SUFFIX.md" >&2; exit 1
+fi
 
-echo "  ✔ filed → $DEST"
+echo "  ✔ filed → $DEST/$STEM$SUFFIX.md"

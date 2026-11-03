@@ -236,7 +236,7 @@ SH
   [ "$status" -eq 0 ]
   [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_routing-protocols-ospf-bgp.flac" ]
   PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record --keep-audio net301 "Routing Protocols: OSPF & BGP"
-  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_routing-protocols-ospf-bgp-2.flac" ]
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_routing-protocols-ospf-bgp-take2.flac" ]
 }
 
 @test "install.sh links commands and units into a fresh HOME" {
@@ -419,7 +419,7 @@ SH
   [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_kept.flac" ]
   export LECTURE_RECORD_MODE=record
   PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run lecture-record net301 "kept"
-  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_kept-2.flac" ]
+  [ -f "$LECTURE_ROOT/inbox/NET301_$(date +%F)_kept-take2.flac" ]
 }
 
 @test "lp_file_busy sees a file held open for writing" {
@@ -657,10 +657,10 @@ SH
   : > "$LECTURE_ROOT/inbox/.incoming-stale.wav"; touch -d '3 hours ago' "$LECTURE_ROOT/inbox/.incoming-stale.wav"
   run lecture-pending
   [ "$status" -eq 0 ]
-  [[ "$output" == *"phone recording queued: CS101_2026-10-20_a-2.wav"* ]]
-  [[ "$output" == *"phone recording queued: CS101_2026-10-20_b-2.wav"* ]]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_a-take2.wav"* ]]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_b-take2.wav"* ]]
   [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_a.wav")" = old ]
-  [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_a-2.wav")" = new ]
+  [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_a-take2.wav")" = new ]
   [ "$(cat "$LECTURE_ROOT/audio/CS101/CS101_2026-10-20_b.wav")" = old ]
   [ ! -e "$LECTURE_ROOT/inbox/.incoming-stale.wav" ]
 }
@@ -745,7 +745,7 @@ registry_rows() { grep -vc '^#' "$LECTURE_ROOT/.state/audio-sha256.tsv" || true;
   run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
   [ "$status" -eq 3 ]
   [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again.wav" ]
-  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again-2.wav" ]
+  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again-take2.wav" ]
   [ "$(whisper_calls)" -eq 1 ]
 }
 
@@ -959,4 +959,216 @@ k, n = session.parse(sys.argv[1]); print(k + '\t' + ('' if n is None else str(n)
   [[ "$output" == *"lab-3.md"* ]]
   [[ "$output" == *"recitation-2.md"* ]]
   [[ "$output" == *"2 pending"* ]]
+}
+
+@test "a -take<N> suffix is not a session number; old -2 names keep their meaning" {
+  source "$REPO/lib/common.sh"
+  cases=(
+    "2026-10-21_lab-take2|lab|"
+    "NET301_2026-10-21_lab-3-sockets-take2|lab|3"
+    "NET301_2026-10-21-take2|lecture|"
+    "2026-10-21_recitation-take12|recitation|"
+    "2026-10-21_lab-2|lab|2"
+    "2026-10-21_lab-Take3|lab|"
+    "2026-10-21_mistake-lab-5|lab|5"
+  )
+  for c in "${cases[@]}"; do
+    IFS='|' read -r stem kind num <<< "$c"
+    [ "$(lp_session "$stem")" = "$kind"$'\t'"$num" ] || { echo "bash: $stem -> $(lp_session "$stem")"; false; }
+    py="$(python3 -I -c "import sys; sys.path.insert(0, '$REPO/lib'); import session
+k, n = session.parse(sys.argv[1]); print(k + '\t' + ('' if n is None else str(n)))" "$stem")"
+    [ "$py" = "$kind"$'\t'"$num" ] || { echo "python: $stem -> $py"; false; }
+  done
+  taken() { [[ "$1" == x || "$1" == x-take2 ]]; }
+  [ "$(lp_take_name x taken)" = x-take3 ]
+  [ "$(lp_take_name y taken)" = y ]
+}
+
+@test "lecture-pending moves the recording info file with the audio, under the new name" {
+  export LECTURE_NOTES_ROOT="$BATS_TEST_TMPDIR/vault"
+  inbox="$LECTURE_NOTES_ROOT/.lecturepipe-inbox"
+  mkdir -p "$inbox" "$LECTURE_ROOT/inbox"
+  echo old > "$LECTURE_ROOT/inbox/CS101_2026-10-20_lab.wav"
+  echo new > "$inbox/CS101_2026-10-20_lab.wav"
+  echo '{"course":"CS101","kind":"lab","number":null,"topic":"","language":"en"}' > "$inbox/CS101_2026-10-20_lab.json"
+  echo '{}' > "$inbox/CS101_2026-10-21_waiting.json"   # its audio is still uploading
+  touch -d '10 minutes ago' "$inbox/"*
+  run lecture-pending
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"phone recording queued: CS101_2026-10-20_lab-take2.wav"* ]]
+  [ "$(cat "$LECTURE_ROOT/inbox/CS101_2026-10-20_lab-take2.wav")" = new ]
+  grep -q '"kind":"lab"' "$LECTURE_ROOT/inbox/CS101_2026-10-20_lab-take2.json"
+  [ ! -e "$inbox/CS101_2026-10-20_lab.json" ]
+  [ -f "$inbox/CS101_2026-10-21_waiting.json" ]
+  [ ! -e "$LECTURE_ROOT/inbox/CS101_2026-10-21_waiting.json" ]
+}
+
+@test "recording info: course, kind and number win over the name, topic is the title, language wins over courses.conf" {
+  fake_transcriber
+  # no glossaries: the fake whisper-cli cannot answer the token probe
+  printf 'NET301 | en | \nHIS101 | de | \n' > "$LECTURE_ROOT/courses.conf"
+  echo a > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lecture-3.wav"
+  printf '{"course":"his101","date":"2026-10-22","kind":"lab","number":4,"topic":"Υποδίκτυα \\"live\\"","language":"el"}' \
+    > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lecture-3.json"
+  run lecture-watch
+  [ "$status" -eq 0 ]
+  N="$LECTURE_ROOT/transcripts/HIS101/2026-10-22_lab-04-live.md"
+  [ -f "$N" ]
+  grep -q '^title: "Υποδίκτυα \\"live\\""$' "$N"
+  grep -q '^language: el$' "$N"
+  grep -q '^# HIS101 Lab 4 2026-10-22$' "$N"
+  [ -f "$LECTURE_ROOT/audio/HIS101/NET301_2026-10-22_lecture-3.wav" ]
+  [ -z "$(ls -A "$LECTURE_ROOT/inbox")" ]
+  # kind and number as the name says: the name stays, the topic is still the title
+  echo b > "$LECTURE_ROOT/inbox/NET301_2026-10-23_lab-3-sockets.wav"
+  echo '{"course":"NET301","kind":"lab","number":3,"topic":"Sockets: TCP-UDP","language":"auto"}' \
+    > "$LECTURE_ROOT/inbox/NET301_2026-10-23_lab-3-sockets.json"
+  run lecture-watch
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-23_lab-3-sockets.md"
+  grep -q '^title: "Sockets: TCP-UDP"$' "$N"
+  grep -q '^language: auto$' "$N"
+  # an unnumbered lecture whose topic starts with a kind word stays a lecture
+  echo c > "$LECTURE_ROOT/inbox/NET301_2026-10-24_lab-safety.wav"
+  echo '{"course":"NET301","kind":"lecture","number":null,"topic":"Lab safety"}' \
+    > "$LECTURE_ROOT/inbox/NET301_2026-10-24_lab-safety.json"
+  run lecture-watch
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-24_lecture-lab-safety.md"
+  grep -q '^tags: \[lecture, transcript\]$' "$N"
+  [ "$(whisper_calls)" -eq 3 ]
+}
+
+@test "a broken recording info file is reported and ignored, and never read as audio" {
+  fake_transcriber
+  echo a > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab-2-x.wav"
+  printf '{"course": "NET301", "kind": ' > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab-2-x.json"
+  echo b > "$LECTURE_ROOT/inbox/NET301_2026-10-23_routing.wav"
+  echo '{"course":"bad course!","kind":"seminar","number":"3","topic":7,"language":"english"}' \
+    > "$LECTURE_ROOT/inbox/NET301_2026-10-23_routing.json"
+  echo '[1, 2]' > "$LECTURE_ROOT/inbox/NET301_2026-10-24_alone.json"
+  run lecture-watch
+  [ "$status" -eq 0 ]
+  [ "$(whisper_calls)" -eq 2 ]
+  grep -q 'recording info: NET301_2026-10-22_lab-2-x.json not read' "$LECTURE_ROOT/.state/watch.log"
+  grep -q 'course is not a course code, ignored' "$LECTURE_ROOT/.state/watch.log"
+  grep -q 'number is not 1 to 99 or null, ignored' "$LECTURE_ROOT/.state/watch.log"
+  [ -f "$LECTURE_ROOT/transcripts/NET301/2026-10-22_lab-2-x.md" ]
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-23_routing.md"
+  grep -q '^title: "routing"$' "$N"
+  grep -q '^language: en$' "$N"
+  [ "$(ls -A "$LECTURE_ROOT/inbox")" = NET301_2026-10-24_alone.json ]
+  [ ! -e "$LECTURE_ROOT/inbox/NET301_2026-10-24_alone.json.failed" ]
+}
+
+@test "a duplicate recording takes its info file along to duplicates/" {
+  fake_transcriber
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav"
+  lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_first.wav" >/dev/null
+  echo same > "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  echo '{"kind":"lab"}' > "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.json"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_again.wav"
+  [ "$status" -eq 3 ]
+  [ -f "$LECTURE_ROOT/.state/duplicates/NET301_2026-10-22_again.json" ]
+  [ -z "$(ls -A "$LECTURE_ROOT/inbox")" ]
+}
+
+@test "a second session with the same name is a -take2, never written over the first" {
+  fake_transcriber
+  echo one > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab.wav"
+  lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab.wav" >/dev/null
+  echo two > "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab.wav"
+  run lecture-transcribe "$LECTURE_ROOT/inbox/NET301_2026-10-22_lab.wav"
+  [ "$status" -eq 0 ]
+  T="$LECTURE_ROOT/transcripts/NET301"
+  [ -f "$T/2026-10-22_lab.md" ] && [ -f "$T/2026-10-22_lab-take2.md" ]
+  grep -q '^# NET301 Lab 2026-10-22$' "$T/2026-10-22_lab-take2.md"
+  grep -q '^title: "lab"$' "$T/2026-10-22_lab-take2.md"
+  [ "$(cat "$LECTURE_ROOT/audio/NET301/NET301_2026-10-22_lab.wav")" = one ]
+  [ "$(cat "$LECTURE_ROOT/audio/NET301/NET301_2026-10-22_lab-take2.wav")" = two ]
+  grep -q "audio/NET301/NET301_2026-10-22_lab-take2.wav" "$T/2026-10-22_lab-take2.md"
+  # a live SRT already given a free name keeps it
+  cp "$REPO/tests/fixtures/sample.srt" "$T/2026-10-22_live.srt"
+  run lecture-transcribe --from-srt "$T/2026-10-22_live.srt" -c NET301 --date 2026-10-22 --title live
+  cp "$REPO/tests/fixtures/sample.srt" "$T/2026-10-22_live-take2.srt"; echo second >> "$T/2026-10-22_live-take2.srt"
+  run lecture-transcribe --from-srt "$T/2026-10-22_live-take2.srt" -c NET301 --date 2026-10-22 --title live
+  [ "$status" -eq 0 ]
+  [ -f "$T/2026-10-22_live.md" ] && [ -f "$T/2026-10-22_live-take2.md" ]
+  ! grep -q second "$T/2026-10-22_live.srt"
+}
+
+@test "lecture-file files a clashing session as -take2 and says filed only when it filed" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  C="$LECTURE_NOTES_ROOT/NET301 Computer Networks"
+  mkdir -p "$C/labs/2026-10-19" "$LECTURE_ROOT/transcripts/NET301" "$LECTURE_ROOT/audio/NET301"
+  echo phone > "$C/labs/2026-10-19/2026-10-21_lab.md"
+  N="$LECTURE_ROOT/transcripts/NET301/2026-10-21_lab.md"; mknote "$N" NET301 en
+  echo srt > "$LECTURE_ROOT/transcripts/NET301/2026-10-21_lab.srt"
+  echo audio > "$LECTURE_ROOT/audio/NET301/NET301_2026-10-21_lab.wav"
+  echo older > "$C/labs/2026-10-19/NET301_2026-10-21_lab-take2.wav"
+  sed -i "s|^audio:.*|audio: \"$LECTURE_ROOT/audio/NET301/NET301_2026-10-21_lab.wav\"|" "$N"
+  run lecture-file "$N"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$C/labs/2026-10-19/2026-10-21_lab.md")" = phone ]
+  # take2 is taken by the audio name, so the whole session is take3
+  [ -f "$C/labs/2026-10-19/2026-10-21_lab-take3.md" ]
+  [ -f "$C/labs/2026-10-19/2026-10-21_lab-take3.srt" ]
+  [ "$(cat "$C/labs/2026-10-19/NET301_2026-10-21_lab-take3.wav")" = audio ]
+  [ "$(readlink "$N")" = "$C/labs/2026-10-19/2026-10-21_lab-take3.md" ]
+  grep -q "audio: \"$C/labs/2026-10-19/NET301_2026-10-21_lab-take3.wav\"" "$C/labs/2026-10-19/2026-10-21_lab-take3.md"
+  [[ "$output" == *"filed → $C/labs/2026-10-19/2026-10-21_lab-take3.md"* ]]
+  # a folder it cannot write to: no "filed", a non-zero exit, the note stays
+  N2="$LECTURE_ROOT/transcripts/NET301/2026-10-22_lab-5.md"; mknote "$N2" NET301 en
+  sed -i 's|^audio:.*|audio: "none"|' "$N2"
+  mkdir -p "$C/labs/05"; chmod 555 "$C/labs/05"
+  run lecture-file "$N2"
+  chmod 755 "$C/labs/05"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"filed →"* ]]
+  [[ "$output" == *"not filed"* ]]
+  [ -f "$N2" ] && [ ! -L "$N2" ]
+}
+
+@test "notes=off in courses.conf stops lecture-notes and lecture-pending too" {
+  cp "$REPO/tests/fixtures/courses.conf" "$LECTURE_ROOT/courses.conf"
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  D="$LECTURE_NOTES_ROOT/networks_net301/lectures/07"; mkdir -p "$D" "$LECTURE_ROOT/transcripts"
+  P="$D/2026-10-19_from-phone.md"; mknote "$P" NET301 en
+  H="$D/2026-10-19_other.md"; mknote "$H" HIS101 de
+  export LECTURE_NOTES_CMD="printf '## Notes\n\n- written\n'"
+  run lecture-notes "$P"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"notes are off for NET301"* ]]
+  grep -q '^notes_status: pending' "$P"
+  run lecture-pending --list
+  [[ "$output" != *"from-phone.md"* ]]
+  [[ "$output" == *"other.md"* ]]
+  [[ "$output" == *"1 pending"* ]]
+  run lecture-pending
+  grep -q '^notes_status: pending' "$P"
+  grep -q '^notes_status: done (cmd)' "$H"
+}
+
+@test "lecture-pending takes over a phone-queued note after a day and reports _unfiled notes" {
+  export LECTURE_NOTES_ROOT="$HOME/vault"
+  D="$LECTURE_NOTES_ROOT/NET301 Networks/lectures/07"; U="$LECTURE_NOTES_ROOT/_unfiled/2026-10-21"
+  mkdir -p "$D" "$U" "$LECTURE_ROOT/transcripts"
+  OLD="$D/2026-10-19_old.md"; mknote "$OLD" NET301 en
+  NEW="$D/2026-10-20_new.md"; mknote "$NEW" NET301 en
+  sed -i 's/^notes_status: .*/notes_status: queued (phone)/' "$OLD" "$NEW"
+  touch -d '25 hours ago' "$OLD"
+  UF="$U/2026-10-21_lab-3.md"; mknote "$UF" NET301 en
+  UX="$U/2026-10-21_x.md"; mknote "$UX" CS999 en
+  sed -i 's/^notes_status: .*/notes_status: done (phone)/' "$UX"
+  run lecture-pending --list
+  [[ "$output" == *"old.md"* ]]
+  [[ "$output" != *"new.md"* ]]
+  [[ "$output" == *"2 pending"* ]]
+  [[ "$output" == *"unfiled: $UF (move it into $LECTURE_NOTES_ROOT/NET301 Networks/labs/)"* ]]
+  [[ "$output" == *"unfiled: $UX (no single course folder for CS999"* ]]
+  [[ "$output" == *"2 unfiled"* ]]
+  export LECTURE_NOTES_CMD="printf '## Notes\n\n- laptop\n'"
+  run lecture-pending
+  grep -q '^notes_status: done (cmd)' "$OLD"
+  grep -q '^notes_status: queued (phone)' "$NEW"
+  grep -q '^notes_status: done (cmd)' "$UF"
+  [[ "$output" == *"unfiled: $UF"* ]]
 }

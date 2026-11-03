@@ -19,6 +19,10 @@ software does and the questions you need to settle yourself.
 | Duplicate list | not written | `~/lectures/.state/audio-sha256.tsv`: a sha256 of each recording taken in, its file name, intake time and where it was filed. `lecture-forget` removes the rows of what it erases |
 | Index | `~/lectures/INDEX.md`: titles, dates, word counts | same |
 
+A recording uploaded by the phone app can come with an info file (`<name>.json`: course,
+date, kind, number, topic, language). It waits next to the audio in the inbox and is
+deleted when the audio is taken in, or moved to `.state/duplicates/` with a duplicate.
+
 Live mode refuses to run if the runtime directory is not a tmpfs, so segments cannot
 land on disk by accident (`LECTURE_LIVE_ALLOW_DISK=1` overrides, loudly).
 

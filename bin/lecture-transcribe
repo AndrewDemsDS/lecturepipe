@@ -7,6 +7,11 @@
 # A recording whose bytes were taken in before is not transcribed again: it exits 3,
 # and a copy in the inbox is moved to .state/duplicates/. --force (or LECTURE_DEDUP=off)
 # transcribes it anyway.
+#
+# A recording taken from the inbox may have an info file next to it, <stem>.json
+# (the phone app writes one): its course, kind and number win over the file name,
+# its topic becomes the title and its language wins over courses.conf. It is
+# removed with the audio. A broken one is reported and ignored.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
@@ -64,6 +69,10 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+INFO_FILE=""
+if [[ -z "$FROM_SRT" && "$(dirname "$SRC")" == "$(realpath -m "$LECTURE_ROOT/inbox")" && -f "${SRC%.*}.json" ]]; then
+  INFO_FILE="${SRC%.*}.json"
+fi
 if [[ -z "$FROM_SRT" ]]; then
   digest="$(lp_sha256 "$SRC")"; at="$(date +%FT%T)"
   if ! earlier="$(lp_dedup_claim "$digest" "$(basename "$SRC")" "$at" "$FORCE")"; then
@@ -73,9 +82,12 @@ if [[ -z "$FROM_SRT" ]]; then
     echo "= same bytes as $e_name (taken in $e_at, $e_where)"
     if [[ "$(dirname "$SRC")" == "$(realpath -m "$LECTURE_ROOT/inbox")" ]]; then
       dupdir="$LECTURE_ROOT/.state/duplicates"; mkdir -p "$dupdir"
-      b="$(basename "$SRC")"; dst="$dupdir/$b"; n=2
-      while [[ -e "$dst" ]]; do dst="$dupdir/${b%.*}-$n.${b##*.}"; n=$((n+1)); done
+      b="$(basename "$SRC")"
+      # shellcheck disable=SC2329  # called by lp_take_name
+      dup_taken() { compgen -G "$dupdir/$1.*" >/dev/null; }
+      dst="$dupdir/$(lp_take_name "${b%.*}" dup_taken).${b##*.}"
       mv -n "$SRC" "$dst"
+      [[ -z "$INFO_FILE" ]] || mv -n "$INFO_FILE" "${dst%.*}.json"
       echo "  moved to $dst, nothing transcribed"
       echo "  to transcribe it anyway: lecture-transcribe --force \"$dst\""
     else
@@ -92,8 +104,25 @@ VAD_ARGS=()
 BASE="$(basename "$SRC")"
 STEM="${BASE%.*}"
 
+I_COURSE=""; I_DATE=""; I_KIND=""; I_NUM=""; I_HAS_NUM=""; I_TOPIC=""; I_LANG=""
+if [[ -n "$INFO_FILE" ]]; then
+  while IFS= read -r line; do
+    v="${line#*=}"
+    case "${line%%=*}" in
+      course)   I_COURSE="$v" ;;
+      date)     I_DATE="$v" ;;
+      kind)     I_KIND="$v" ;;
+      number)   I_NUM="$v"; I_HAS_NUM=1 ;;
+      topic)    I_TOPIC="$v" ;;
+      language) I_LANG="$v" ;;
+    esac
+  done < <(python3 -I "$LECTUREPIPE_LIB/recinfo.py" "$INFO_FILE" || true)
+  echo "  info: $(basename "$INFO_FILE")${I_COURSE:+ course=$I_COURSE}${I_KIND:+ kind=$I_KIND}${I_HAS_NUM:+ number=${I_NUM:-none}}${I_LANG:+ language=$I_LANG}"
+fi
+
 # Course code: explicit flag, else the first "_"-delimited token of the filename
 # (what lecture-record writes), else a leading letters+digits code like CS101.
+[[ -n "$COURSE" ]] || COURSE="$I_COURSE"
 if [[ -z "$COURSE" ]]; then
   first="${STEM%%_*}"
   if [[ "$STEM" == *_* && "$first" =~ ^[A-Za-z][A-Za-z0-9-]{1,11}$ ]]; then
@@ -108,23 +137,52 @@ COURSE="$(printf '%s' "$COURSE" | tr '[:lower:]' '[:upper:]')"
 # Date: from the filename if present, else the file's mtime.
 DATE="$DATE_ARG"
 [[ -n "$DATE" ]] || DATE="$(printf '%s' "$STEM" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
+[[ -n "$DATE" ]] || DATE="$I_DATE"
 [[ -n "$DATE" ]] || DATE="$(date -r "$SRC" +%F)"
 
 ROW="$(lp_course_lookup "$COURSE")"
 [[ -n "$ROW" ]] || ROW="$(lp_course_lookup DEFAULT)"
 IFS=$'\t' read -r LANG_CODE PROMPT OPTS <<< "${ROW:-}"
-LANG_CODE="${LANG_CODE:-en}"
+LANG_CODE="${I_LANG:-${LANG_CODE:-en}}"
 PROMPT="${PROMPT:-}"
 [[ "${OPTS:-}" == "notes=off" ]] && NOTES=0
 
 SLUG="$TITLE_ARG"
+# The name's own course code goes too, also when the info file named another course.
+NAME_COURSE="${STEM%%_*}"
+[[ "$STEM" == *_* && "$NAME_COURSE" =~ ^[A-Za-z][A-Za-z0-9-]{1,11}$ ]] || NAME_COURSE="$COURSE"
 [[ -n "$SLUG" ]] || SLUG="$(printf '%s' "$STEM" \
-  | sed -E "s/^${COURSE}[-_ ]*//I; s/[0-9]{4}-[0-9]{2}-[0-9]{2}[-_ ]*//; s/[^[:alnum:]._-]+/-/g; s/^-+|-+$//g")"
+  | sed -E "s/^(${COURSE}|${NAME_COURSE})[-_ ]*//I; s/[0-9]{4}-[0-9]{2}-[0-9]{2}[-_ ]*//; s/[^[:alnum:]._-]+/-/g; s/^-+|-+$//g")"
+# The info file's kind and number win: the name gets the kind word and number the
+# info gives, so lecture-file and the notes pass read the same session from it.
+if [[ -z "$TITLE_ARG" && -n "$I_KIND$I_HAS_NUM" ]]; then
+  IFS=$'\t' read -r n_kind n_num <<< "$(lp_session "$SLUG")"
+  i_kind="${I_KIND:-$n_kind}"; i_num="$n_num"; [[ -z "$I_HAS_NUM" ]] || i_num="$I_NUM"
+  if [[ "$i_kind" != "$n_kind" || "${i_num:+$((10#$i_num))}" != "${n_num:+$((10#$n_num))}" ]]; then
+    t_slug="$(printf '%s' "$I_TOPIC" | tr '[:upper:] ' '[:lower:]-' | LC_ALL=C sed -E 's/[^a-z0-9-]+//g; s/-+/-/g; s/^-|-$//g')"
+    SLUG="$i_kind${i_num:+-$(printf '%02d' "$((10#$i_num))")}${t_slug:+-$t_slug}"
+  fi
+fi
 [[ -n "$SLUG" ]] || SLUG="lecture"
+# The title: the info file's topic as written, else the name's words without a -take<N>.
+TITLE="$SLUG"; [[ "$TITLE" =~ ^(.*-)?take[0-9]+$ ]] && { TITLE="${BASH_REMATCH[1]}"; TITLE="${TITLE%-}"; }
+TOPIC=""; [[ -n "$TITLE_ARG" ]] || TOPIC="$I_TOPIC"
 NAME="${DATE}_${SLUG}"
 
 OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"
 AUDIODIR="$LECTURE_ROOT/audio/$COURSE"
+# Never write over another session's note: a second one with the same name gets -take<N>.
+# lecture-live has already picked a free name for its SRT in OUTDIR, so that one is kept.
+note_taken() { [[ -e "$OUTDIR/$1.md" || -L "$OUTDIR/$1.md" || ( -e "$OUTDIR/$1.srt" && "$(realpath -m "$OUTDIR/$1.srt")" != "$SRC" ) ]]; }
+if [[ -n "$FROM_SRT" && "$(dirname "$SRC")" == "$(realpath -m "$OUTDIR")" ]]; then NAME="$(basename "$SRC" .srt)"; fi
+NAME="$(lp_take_name "$NAME" note_taken)"
+# Only a recording from the inbox is renamed: one run again from the archive or the
+# vault stays where it is, as before.
+ABASE="$BASE"
+if [[ -z "$FROM_SRT" && "$(dirname "$SRC")" == "$(realpath -m "$LECTURE_ROOT/inbox")" ]]; then
+  audio_taken() { [[ -e "$AUDIODIR/$1.${BASE##*.}" || -L "$AUDIODIR/$1.${BASE##*.}" ]]; }
+  ABASE="$(lp_take_name "$STEM" audio_taken).${BASE##*.}"
+fi
 mkdir -p "$OUTDIR"
 [[ -n "$FROM_SRT" ]] || mkdir -p "$AUDIODIR"   # live mode keeps no audio, so no audio folder
 
@@ -136,7 +194,7 @@ if [[ -n "$FROM_SRT" ]]; then
   [[ "$SRC" == "$OUTDIR/$NAME.srt" ]] || mv -f "$SRC" "$OUTDIR/$NAME.srt"
   [[ -f "${SRC%.srt}.txt" && "${SRC%.srt}.txt" != "$OUTDIR/$NAME.txt" ]] && mv -f "${SRC%.srt}.txt" "$OUTDIR/$NAME.txt"
 else
-AUDIO_REF="$AUDIODIR/$BASE"
+AUDIO_REF="$AUDIODIR/$ABASE"
 WORK="$(mktemp -d)"
 WAV="$WORK/audio.wav"
 
@@ -187,12 +245,15 @@ echo "  [3/3] writing note…"
 python3 -I "$LECTUREPIPE_LIB/srt2md.py" \
   --srt "$OUTDIR/$NAME.srt" \
   --out "$OUTDIR/$NAME.md" \
-  --course "$COURSE" --date "$DATE" --title "$SLUG" \
+  --course "$COURSE" --date "$DATE" --title "$TITLE" --topic "$TOPIC" \
   --lang "$LANG_CODE" --model "$MODEL_KIND" \
   --duration "$DUR" --source "$AUDIO_REF"
 
 # Keep the source audio, out of the inbox (record mode only).
-if [[ -z "$FROM_SRT" && "$SRC" != "$AUDIODIR/$BASE" ]]; then mv -n "$SRC" "$AUDIODIR/$BASE"; fi
+if [[ -z "$FROM_SRT" && "$SRC" != "$AUDIODIR/$BASE" ]]; then
+  mv -n "$SRC" "$AUDIODIR/$ABASE"
+  [[ -e "$SRC" || -z "$INFO_FILE" ]] || rm -f "$INFO_FILE"
+fi
 
 if [[ "$NOTES" == 1 ]]; then
   lecture-notes "$OUTDIR/$NAME.md" || echo "  ! notes pass failed (transcript is safe)"

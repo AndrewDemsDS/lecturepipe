@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Give notes to transcripts that arrived without them: notes written by another
 # device (the phone app) into the vault with `notes_status: pending`, or lectures
-# whose notes pass failed earlier. Runs from lecture-pending.timer and by hand.
+# whose notes pass failed earlier. A note the phone kept for its own notes engine
+# (`notes_status: queued (phone)`) counts as pending once it is a day old. Notes in
+# the vault's _unfiled/ get notes too and are listed so they can be filed by hand.
+# Courses with notes=off in courses.conf are left alone.
+# Runs from lecture-pending.timer and by hand.
 #
 #   lecture-pending            run the notes pass on every pending note
 #   lecture-pending --list     show them only
@@ -10,7 +14,7 @@ set -uo pipefail
 source "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 
 LIST=0
-case "${1:-}" in --list) LIST=1 ;; -h|--help) sed -n '2,8p' "$0"; exit 0 ;; esac
+case "${1:-}" in --list) LIST=1 ;; -h|--help) sed -n '2,12p' "$0"; exit 0 ;; esac
 
 
 roots=("$LECTURE_ROOT/transcripts")
@@ -20,6 +24,7 @@ roots=("$LECTURE_ROOT/transcripts")
 # or .part names (the temporary names sync clients use, as in Nextcloud's own ignore list).
 # The file is first moved to a dot name in the inbox (invisible to lecture-watch's globs) and then
 # renamed within the same directory, so the watcher never sees a half-copied file.
+# shellcheck disable=SC2329  # called by lp_take_name
 phone_taken() {  # phone_taken stem: is this stem already in the inbox, the audio archive or the transcripts?
   local stem="$1" course="" rest="" c
   c="$(compgen -G "$LECTURE_ROOT/inbox/$stem.*" || true)"; [[ -z "$c" ]] || return 0
@@ -35,29 +40,62 @@ if [[ -n "$PHONE_INBOX" && -d "$PHONE_INBOX" && "$LIST" == 0 ]]; then
   mkdir -p "$LECTURE_ROOT/inbox"
   find "$LECTURE_ROOT/inbox" -maxdepth 1 -type f -name '.incoming-*' -mmin +60 -delete 2>/dev/null
   while IFS= read -r -d '' f; do
-    base="$(basename "$f")"; ext="${base##*.}"; stem="${base%.*}"; name="$base"; n=1
-    while phone_taken "${name%.*}"; do n=$((n+1)); name="$stem-$n.$ext"; done
+    base="$(basename "$f")"; ext="${base##*.}"; stem="${base%.*}"
+    name="$(lp_take_name "$stem" phone_taken).$ext"
+    # The recording info file goes first, under the new name: lecture-watch only
+    # looks at audio, and the audio is what starts the run.
+    info="${f%.*}.json"; info_to=""
+    if [[ -f "$info" ]]; then
+      info_to="$LECTURE_ROOT/inbox/${name%.*}.json"
+      mv -n "$info" "$info_to" && [[ ! -e "$info" ]] || info_to=""
+    fi
     tmp="$LECTURE_ROOT/inbox/.incoming-$name"
     if mv -n "$f" "$tmp" && [[ ! -e "$f" ]] && mv -n "$tmp" "$LECTURE_ROOT/inbox/$name" && [[ ! -e "$tmp" ]]; then
       echo "phone recording queued: $name"
     else
+      [[ -z "$info_to" ]] || mv -n "$info_to" "$info"
       echo "phone recording NOT moved (left in the vault inbox): $base"
     fi
   done < <(find "$PHONE_INBOX" -maxdepth 1 -type f \( -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' \) ! -name '.*' ! -name '~*' -mmin +2 -print0)
 fi
 # Nothing while a recording is in progress: the GPU would put fan noise into it.
 [[ "$LIST" == 1 ]] || ! lp_recording_running || { echo "recording in progress, try later"; exit 0; }
-n=0; done_n=0
+n=0; done_n=0; unfiled=()
 while IFS= read -r note; do
-  grep -q '^notes_status: pending' "$note" || continue
+  [[ "$note" != */_unfiled/* ]] || unfiled+=("$note")
+  if ! grep -q '^notes_status: pending' "$note"; then
+    # The phone's own notes engine had a day; after that the laptop writes them.
+    grep -q '^notes_status: queued (phone)' "$note" && [[ -n "$(find "$note" -mmin +1440)" ]] || continue
+  fi
   grep -q 'LECTURE-NOTES-START' "$note" || continue
+  course="$(grep -m1 '^course:' "$note" | awk '{print $2}')"
+  ! lp_notes_off "$course" || continue
   words="$(grep -m1 '^words:' "$note" | awk '{print $2}')"
   [[ "${words:-0}" -ge 120 ]] || continue
   n=$((n+1))
   if [[ "$LIST" == 1 ]]; then echo "$note"; continue; fi
   echo "▶ $note"
   if lecture-notes "$note"; then done_n=$((done_n+1)); fi
-done < <(find "${roots[@]}" \( -path '*/lectures/*' -o -path '*/labs/*' -o -path '*/recitations/*' \) -name '*.md' -not -path '*/.state/*' 2>/dev/null; find "$LECTURE_ROOT/transcripts" -maxdepth 2 -name '*.md' -not -type l 2>/dev/null)
-[[ "$LIST" == 1 ]] && { echo "$n pending"; exit 0; }
+done < <(find "${roots[@]}" \( -path '*/lectures/*' -o -path '*/labs/*' -o -path '*/recitations/*' -o -path '*/_unfiled/*' \) -name '*.md' -not -path '*/.state/*' 2>/dev/null; find "$LECTURE_ROOT/transcripts" -maxdepth 2 -name '*.md' -not -type l 2>/dev/null)
+# The phone puts a note in _unfiled/ when no single course folder matched; say where it belongs.
+report_unfiled() {
+  local note course dir kind
+  for note in "${unfiled[@]}"; do
+    course="$(grep -m1 '^course:' "$note" | awk '{print $2}')"
+    dir="$(lp_vault_course_dir "$course")"
+    IFS=$'\t' read -r kind _ <<< "$(lp_session "$(basename "$note" .md)")"
+    if [[ -n "$dir" ]]; then
+      echo "unfiled: $note (move it into $dir/$(lp_kind_dir "$kind")/)"
+    else
+      echo "unfiled: $note (no single course folder for ${course:-its course}, make one and move it there)"
+    fi
+  done
+}
+if [[ "$LIST" == 1 ]]; then
+  echo "$n pending"
+  [[ ${#unfiled[@]} -eq 0 ]] || { report_unfiled; echo "${#unfiled[@]} unfiled"; }
+  exit 0
+fi
 [[ "$n" -gt 0 ]] && { lecture-index >/dev/null 2>&1 || true; echo "notes written for $done_n of $n pending note(s)"; }
+[[ ${#unfiled[@]} -eq 0 ]] || report_unfiled
 exit 0

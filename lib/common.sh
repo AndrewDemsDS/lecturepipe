@@ -129,11 +129,13 @@ w.writeframes(bytes(64000)); w.close()' "$tmp/silence.wav" 2>/dev/null \
 # lab, ergastirio; recitation, frontistirio. A token is not glued to a letter and may
 # carry "-", "_" or space and a 1 to 2 digit number. The first token decides the kind,
 # the number is the first one after a token of that kind. No token: a lecture.
+# A trailing "-take<N>" (two recordings with one name, see lp_take_name) is dropped first.
 LP_SESSION_RE='(^|[^[:alpha:]])(lecture|lec|dialexi|lab|ergastirio|recitation|frontistirio)([-_ ]?([0-9]{1,2}))?([^[:alpha:]]|$)'
 
 # lp_session STEM -> "kind<TAB>number", the number empty when absent.
 lp_session() {
   local s="${1,,}" kind="" num="" k m tok
+  [[ "$s" =~ ^(.*)-take[0-9]+$ ]] && s="${BASH_REMATCH[1]}"
   while [[ -n "$s" && "$s" =~ $LP_SESSION_RE ]]; do
     m="${BASH_REMATCH[0]}"; tok="${BASH_REMATCH[2]}"
     case "$tok" in
@@ -147,6 +149,23 @@ lp_session() {
     s="${s#*"$m"}"
   done
   printf '%s\t%s\n' "${kind:-lecture}" "$num"
+}
+
+# lp_take_name STEM TAKEN_CMD... -> STEM, or the first STEM-take<N> (N >= 2) for which
+# "TAKEN_CMD... NAME" fails. The phone app uses the same suffix, and lp_session ignores it,
+# so a second recording of "lab" never reads as lab 2.
+lp_take_name() {
+  local stem="$1" name="$1" n=2; shift
+  while "$@" "$name"; do name="$stem-take$n"; n=$((n+1)); done
+  printf '%s\n' "$name"
+}
+
+# lp_notes_off COURSE: does courses.conf (or its DEFAULT row) say notes=off for COURSE?
+lp_notes_off() {
+  local row opts
+  row="$(lp_course_lookup "$1")"; [[ -n "$row" ]] || row="$(lp_course_lookup DEFAULT)"
+  IFS=$'\t' read -r _ _ opts <<< "${row:-}"
+  [[ "${opts:-}" == "notes=off" ]]
 }
 
 # lp_kind_dir KIND -> the vault folder for that kind: lectures, labs or recitations.

@@ -102,6 +102,17 @@ Not recorded by you? Drop any file ffmpeg reads into `~/lectures/inbox/`, named
 Put `lab-3` or `recitation-3` in the topic to mark the kind (see
 [Filing](#filing-into-a-notes-vault)).
 
+Two recordings with the same name (two unnumbered labs on one day, say) never overwrite
+each other: the second is called `<name>-take2`, the next `-take3`. The phone app uses the
+same suffix. A `-take<N>` at the end of a name is not a session number, so `lab-take2`
+is an unnumbered lab and `lab-2` is still lab 2.
+
+A recording can bring an info file with the same name, `<name>.json`. The phone app
+uploads one before the audio. When the audio is taken from the inbox, its `course`,
+`kind` and `number` win over the name, `topic` becomes the title (Greek is fine) and
+`language` wins over `courses.conf` for that run. The info file goes away with the audio.
+A broken one is noted in `watch.log` and the name is used instead.
+
 Online lecture? Record what the laptop plays instead of the room: `lecture-setup` lists
 the `.monitor` sources, or set `LECTURE_MIC` to one for a single run.
 
@@ -114,6 +125,14 @@ NET301 | en | Computer Networks, Prof. Example. Terms: TCP, UDP, OSPF, BGP, NAT,
 HIS210 | de | Neuere Geschichte | notes=off
 DEFAULT | en | University lecture.
 ```
+
+A course code starts with a letter and has 2 to 12 ASCII letters, digits or hyphens in
+all: `NET301` and `CS-101` work, `X`, `ΜΑΘ101` and `NET_301` do not. Case does not
+matter: codes are stored in upper case. The phone app checks codes against the same rule. A recording
+name starts with the code and a `_`, so the code itself never contains one.
+
+`notes=off` at the end of a line means no notes for that course, from any command:
+`lecture-transcribe`, `lecture-notes` and `lecture-pending` all leave its transcripts alone.
 
 The language is pinned on purpose. Whisper detects language once per file and commits, so
 `auto` on a Greek lecture with English terms can turn the whole transcript into an English
@@ -189,6 +208,16 @@ their solutions in a recitation. Slide PDFs already in that folder are
 used by the notes pass, so download the deck before the recording ends. A PDF named after
 the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extra reading.
 
+If the folder already holds a file with the same name (the phone app filed that session
+already, say), the new one is filed as `<name>-take2`. `lecture-file` only says `filed`
+when the note really moved. Otherwise it exits with an error and leaves the files where
+they are.
+
+The phone app puts a note in `<vault>/_unfiled/<date>/` when no single course folder
+matches. `lecture-pending` writes notes for those too and lists them with the folder they
+belong in, so you can move them. A note the phone kept for its own notes engine
+(`notes_status: queued (phone)`) is handed to the laptop's engine once it is a day old.
+
 ## Duplicate recordings
 
 A recording that reaches the inbox twice, say the phone app uploading one file under two
@@ -224,7 +253,7 @@ or drop it from the list with `lecture-dedup --forget FILE` and queue it as usua
 | `lecture-transcribe FILE [-m turbo] [--no-notes] [--force]` | Process one file by hand. `--force` transcribes a duplicate anyway. |
 | `lecture-notes NOTE.md [slides.pdf ...]` | Run or redo the notes pass. |
 | `lecture-watch` | Drain the inbox now. |
-| `lecture-pending [--list]` | Notes for transcripts that arrived without them (phone app, failed runs). Also moves finished recordings the phone app uploaded to `.lecturepipe-inbox/` in the notes vault into `inbox/`. Runs every 15 min from a timer. |
+| `lecture-pending [--list]` | Notes for transcripts that arrived without them (phone app, failed runs, phone-queued notes older than a day). Lists notes in `_unfiled/`. Also moves finished recordings the phone app uploaded to `.lecturepipe-inbox/` in the notes vault into `inbox/`, with their info files. Runs every 15 min from a timer. |
 | `lecture-dedup FILE \| --backfill \| --forget FILE \| --list` | Was this recording taken in before; hash the archive once; let a file be queued again. |
 | `lecture-file NOTE.md [NN]` | File into the vault by hand, or fix a lecture, lab or recitation number. |
 | `lecture-index` | Rebuild `INDEX.md`. |

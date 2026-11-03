@@ -6,7 +6,7 @@ regroups cues into paragraphs at sentence boundaries or after a long pause,
 and stamps each paragraph with the time it starts so you can jump back to
 the audio.
 """
-import argparse, collections, re, datetime, os, sys
+import argparse, collections, re, datetime, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session  # noqa: E402
@@ -56,6 +56,7 @@ def main():
     for f in ("srt", "out", "course", "date", "title", "lang", "model", "source"):
         p.add_argument(f"--{f}", required=True)
     p.add_argument("--duration", type=int, default=0)
+    p.add_argument("--topic", default="", help="the title as written, instead of the slug")
     a = p.parse_args()
 
     blocks = parse(a.srt)
@@ -76,7 +77,8 @@ def main():
             print(f"  !! REPETITION LOOP: {n}/{len(texts)} segments ({ratio:.0%}) are "
                   f"{top[:60]!r}", flush=True)
     kind, num = session.parse(os.path.basename(a.out).rsplit(".", 1)[0])
-    title = a.title.replace("-", " ").replace("_", " ").strip() or kind.capitalize()
+    title = (a.topic.strip() or a.title.replace("-", " ").replace("_", " ").strip()
+             or kind.capitalize())
     # A lab or recitation says so in the heading; a lecture heading stays as it was.
     heading = f"{a.course} {a.date}"
     if kind != "lecture":
@@ -87,7 +89,7 @@ def main():
         "---",
         f"course: {a.course}",
         f"date: {a.date}",
-        f'title: "{title}"',
+        f"title: {json.dumps(title, ensure_ascii=False)}",
         f"duration: {hms(a.duration)}",
         f"words: {words}",
         f"language: {a.lang}",

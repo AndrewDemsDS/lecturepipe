@@ -41,8 +41,8 @@ COURSE="$(printf '%s' "$COURSE" | tr '[:lower:]' '[:upper:]')"
 SLUG="$(printf '%s' "$TOPIC" | tr '[:upper:] ' '[:lower:]-' | sed -E 's/[^a-z0-9-]+//g; s/-+/-/g; s/^-|-$//g')"
 
 NAME="${COURSE}_$(date +%F)${SLUG:+_$SLUG}"
-OUT="$INBOX/${NAME}.flac"
-n=2; while [[ -e "$OUT" ]]; do OUT="$INBOX/${NAME}-${n}.flac"; n=$((n+1)); done
+inbox_taken() { compgen -G "$INBOX/$1.*" >/dev/null; }
+OUT="$INBOX/$(lp_take_name "$NAME" inbox_taken).flac"
 
 command -v ffmpeg >/dev/null 2>&1 || { echo "✖ ffmpeg not found" >&2; exit 1; }
 

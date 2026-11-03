@@ -152,7 +152,8 @@ if [[ ! -s "$SRT" ]]; then
   exit 1
 fi
 OUTDIR="$LECTURE_ROOT/transcripts/$COURSE"; mkdir -p "$OUTDIR"
-NAME="${DATE}_${SLUG}"; n=2; while [[ -e "$OUTDIR/$NAME.md" ]]; do NAME="${DATE}_${SLUG}-${n}"; n=$((n+1)); done
+note_taken() { [[ -e "$OUTDIR/$1.md" || -L "$OUTDIR/$1.md" || -e "$OUTDIR/$1.srt" ]]; }
+NAME="$(lp_take_name "${DATE}_${SLUG}" note_taken)"
 mv "$SRT" "$OUTDIR/$NAME.srt"; mv "$TXT" "$OUTDIR/$NAME.txt"
 echo "✔ transcript saved, no audio kept"
 lecture-transcribe --from-srt "$OUTDIR/$NAME.srt" -c "$COURSE" --date "$DATE" --title "$SLUG" --duration "$DUR"
