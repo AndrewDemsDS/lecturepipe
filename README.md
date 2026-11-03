@@ -210,7 +210,7 @@ the folder (`07/07.pdf`) is taken as the deck and other PDFs are treated as extr
 
 If the folder already holds a file with the same name (the phone app filed that session
 already, say), the new one is filed as `<name>-take2`. `lecture-file` only says `filed`
-when the note really moved. Otherwise it exits with an error and leaves the files where
+when the note moved. Otherwise it exits with an error and leaves the files where
 they are.
 
 The phone app puts a note in `<vault>/_unfiled/<date>/` when no single course folder
