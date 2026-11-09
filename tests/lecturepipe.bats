@@ -48,6 +48,30 @@ mknote() {  # mknote path course lang words
   grep -q '^repetition_warning:' "$BATS_TEST_TMPDIR/l.md"
 }
 
+@test "srt2md flags a long recording with almost no words" {
+  run python3 -I "$REPO/lib/srt2md.py" --srt "$REPO/tests/fixtures/sample.srt" --out "$BATS_TEST_TMPDIR/y.md" \
+    --course X --date 2026-10-19 --title t --lang en --model large --duration 3433 --source /tmp/x
+  [[ "$output" == *"LOW YIELD"* ]]
+  grep -q '^low_yield_warning:' "$BATS_TEST_TMPDIR/y.md"
+  run python3 -I "$REPO/lib/srt2md.py" --srt "$REPO/tests/fixtures/sample.srt" --out "$BATS_TEST_TMPDIR/s.md" \
+    --course X --date 2026-10-19 --title t --lang en --model large --duration 20 --source /tmp/x
+  ! grep -q '^low_yield_warning:' "$BATS_TEST_TMPDIR/s.md"
+}
+
+@test "lp_file_busy sees a writer, not a reader, also with glob characters in the name" {
+  f="$BATS_TEST_TMPDIR/rec [1]*.flac"; : > "$f"
+  run bash -c 'source "$1/lib/common.sh"; lp_file_busy "$2"' _ "$REPO" "$f"
+  [ "$status" -eq 1 ]
+  exec 7>>"$f"
+  run bash -c 'source "$1/lib/common.sh"; lp_file_busy "$2"' _ "$REPO" "$f"
+  exec 7>&-
+  [ "$status" -eq 0 ]
+  exec 7<"$f"
+  run bash -c 'source "$1/lib/common.sh"; lp_file_busy "$2"' _ "$REPO" "$f"
+  exec 7<&-
+  [ "$status" -eq 1 ]
+}
+
 @test "courses.conf lookup: language, glossary, notes=off, DEFAULT fallback" {
   cp "$REPO/tests/fixtures/courses.conf" "$LECTURE_ROOT/courses.conf"
   source "$REPO/lib/common.sh"

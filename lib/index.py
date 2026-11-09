@@ -29,6 +29,8 @@ def main():
                 "dur": g.get("duration", "?"),
                 "words": g.get("words", "?"),
                 "notes": g.get("notes_status", "?").split()[0],
+                # A decoder loop or a near-empty transcript: worth a re-run.
+                "warn": bool(re.search(r"^(repetition|low_yield)_warning:", doc, re.M)),
             })
 
     out = ["# Lectures", "",
@@ -40,6 +42,8 @@ def main():
                 "|---|---|---|---|---|"]
         for r in sorted(items, key=lambda x: x["date"], reverse=True):
             mark = {"done": "✅", "pending": "⏳"}.get(r["notes"], "—")
+            if r["warn"]:
+                mark += " ⚠ re-run"
             out.append(f"| {r['date']} | [{r['title']}]({r['path']}) | {r['dur']} | {r['words']} | {mark} |")
         out.append("")
     with open(os.path.join(root, "INDEX.md"), "w", encoding="utf-8") as fh:

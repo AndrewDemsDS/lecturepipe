@@ -76,6 +76,16 @@ def main():
                          f'({ratio:.0%}) — likely a decoder loop; re-run this lecture"')
             print(f"  !! REPETITION LOOP: {n}/{len(texts)} segments ({ratio:.0%}) are "
                   f"{top[:60]!r}", flush=True)
+    # A long recording that yields almost no text failed somewhere (VAD dropping
+    # speech, a dead mic channel, a stalled decoder). Speech runs at 80 to 150 words
+    # a minute; flag anything under 30 over ten minutes or more so it gets re-run.
+    yield_note = ""
+    minutes = a.duration / 60
+    if minutes >= 10 and words / minutes < 30:
+        yield_note = (f'low_yield_warning: "{words} words in {minutes:.0f} min '
+                      f'({words / minutes:.0f}/min); likely a failed transcription, re-run it"')
+        print(f"  !! LOW YIELD: {words} words in {minutes:.0f} min, check the audio and re-run",
+              flush=True)
     kind, num = session.parse(os.path.basename(a.out).rsplit(".", 1)[0])
     title = (a.topic.strip() or a.title.replace("-", " ").replace("_", " ").strip()
              or kind.capitalize())
@@ -98,6 +108,7 @@ def main():
         f"transcribed: {datetime.date.today().isoformat()}",
         f"tags: [{kind}, transcript]",
         *([loop_note] if loop_note else []),
+        *([yield_note] if yield_note else []),
         "notes_status: pending",
         "---",
         "",

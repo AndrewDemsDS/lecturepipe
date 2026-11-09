@@ -189,14 +189,16 @@ lp_vault_course_dir() {
 # Is some process holding FILE open for writing? Reads /proc directly, so it needs
 # no lsof or fuser and sees only this user's processes, which is who records.
 lp_file_busy() {
-  local target fd
+  local target pat fd flags
   target="$(readlink -f "$1")" || return 1
-  for fd in /proc/[0-9]*/fd/*; do
-    [[ "$(readlink "$fd" 2>/dev/null)" == "$target" ]] || continue
+  # One find over every fd instead of a readlink fork per fd: a desktop session has
+  # thousands of them, which made each check take about ten seconds.
+  pat="$(printf '%s' "$target" | sed 's/[][*?\\]/\\&/g')"
+  while IFS= read -r -d '' fd; do
     # fdinfo flags: octal, O_WRONLY=01 or O_RDWR=02 in the low bits
-    local flags; flags="$(awk '/^flags:/{print $2}' "${fd/fd\//fdinfo/}" 2>/dev/null)"
+    flags="$(awk '/^flags:/{print $2}' "${fd/\/fd\//\/fdinfo\/}" 2>/dev/null)"
     [[ -n "$flags" && $(( 8#$flags & 3 )) -ne 0 ]] && return 0
-  done
+  done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -lname "$pat" -print0 2>/dev/null)
   return 1
 }
 
